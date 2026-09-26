@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zerodha AI Agent | Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navigation / Status Bar -->
+        <header class="topbar">
+            <div class="logo">
+                <span class="logo-text">Zerodha AI Agent</span>
+                <span class="badge mode-dry">DRY RUN</span>
+            </div>
+            
+            <div style="display: flex; align-items: center; gap: 24px;">
+                <button class="btn btn-reject" id="btn-emergency-stop" onclick="toggleEmergencyStop()" style="font-weight: bold; padding: 8px 16px;">🚨 EMERGENCY STOP</button>
+                <div class="status-indicators">
+                    <div class="status-item">
+                        <span class="status-dot online" id="broker-status-dot"></span>
+                        <span class="status-text" id="broker-status-text">Kite API Connected</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-dot online" id="market-status-dot"></span>
+                        <span class="status-text" id="market-status-text">Market Open</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-dot pulse" id="agent-status-dot"></span>
+                        <span class="status-text" id="agent-status-text">Agent Active</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content Grid -->
+        <main class="dashboard-grid">
+            
+            <!-- Left Column: Watchlist -->
+            <section class="panel watchlist-panel">
+                <div class="panel-header">
+                    <h2>Live Watchlist</h2>
+                    <span class="timestamp" id="last-update-time">Last update: --:--:--</span>
+                </div>
+                
+                <div class="table-container">
+                    <table class="data-table" id="watchlist-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>LTP</th>
+                                <th>Change</th>
+                                <th>Signal</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            
+            <!-- Right Column: P&L & Positions -->
+            <section class="panel portfolio-panel">
+                <!-- P&L Summary Cards -->
+                <div class="pnl-summary">
+                    <div class="summary-card">
+                        <h3>Available Margin</h3>
+                        <div class="value" id="margin-val">₹--</div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>Realized P&L</h3>
+                        <div class="value positive" id="realized-pnl-val">₹--</div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>Unrealized P&L</h3>
+                        <div class="value" id="unrealized-pnl-val">₹--</div>
+                    </div>
+                </div>
+
+                <div class="panel-header" style="margin-top: 24px;">
+                    <h2>Open Positions</h2>
+                </div>
+                
+                <div class="table-container">
+                    <table class="data-table" id="positions-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Qty</th>
+                                <th>Avg Price</th>
+                                <th>LTP</th>
+                                <th>P&L</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            
+            <!-- Bottom Row: Candidate Trades -->
+            <section class="panel candidate-trades-panel">
+                <div class="panel-header">
+                    <h2>Candidate Trades (AI Recommended)</h2>
+                </div>
+                
+                <div class="table-container">
+                    <table class="data-table" id="candidate-trades-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Action</th>
+                                <th>Price</th>
+                                <th>AI Reasoning</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr id="no-candidates-row">
+                                <td colspan="5" style="text-align: center; color: var(--text-muted);">Waiting for AI trade signals...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            
+            <!-- Audit Log Panel -->
+            <section class="panel audit-log-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
+                <div class="panel-header">
+                    <h2>Audit Log & Order History</h2>
+                </div>
+                
+                <div class="table-container" style="max-height: 400px; overflow-y: auto;">
+                    <table class="data-table" id="audit-log-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Type</th>
+                                <th>Trade ID</th>
+                                <th>Symbol</th>
+                                <th>Action</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
