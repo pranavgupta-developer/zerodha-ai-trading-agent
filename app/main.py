@@ -8,6 +8,7 @@ import asyncio
 import json
 import random
 import logging
+import time
 from app.core.config import settings
 from app.broker.kite_adapter import BrokerAdapter
 from app.db.database import engine, Base, SessionLocal
@@ -20,6 +21,7 @@ from datetime import datetime
 from app.trading.pipeline import TradingPipeline
 from app.trading.strategy import EmaCrossoverRsiStrategy
 from app.agent.service import AgentService
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=[logging.StreamHandler(), logging.FileHandler("app.log")])
 logger = logging.getLogger(__name__)
 
 active_connections: list[WebSocket] = []
@@ -56,7 +58,8 @@ async def simulate_trades_stream():
     import yfinance as yf
     from app.utils.indicators import get_feature_snapshot
     
-    symbols = ["RELIANCE.NS"]
+    # You can add or remove Yahoo Finance symbols (e.g., '.NS' for NSE) here:
+    symbols = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"]
     display_symbols = {s: s.replace(".NS", "") for s in symbols}
     
     # Initialize the real pipeline
@@ -64,102 +67,183 @@ async def simulate_trades_stream():
     agent_service = AgentService()
     # Using the global risk_engine and order_manager defined below (we can just reference them since they are global)
     
+
+    last_broker_sync = 0
+    cached_holdings = []
+    cached_positions = []
+    
     while True:
         try:
+            # Sync broker data every 10 seconds to avoid rate limits
+            if time.time() - last_broker_sync > 10:
+                try:
+                    cached_holdings = broker.get_holdings() or []
+                    cached_positions_data = broker.get_positions()
+                    cached_positions = cached_positions_data.get("net", []) if cached_positions_data else []
+                except Exception as e:
+                    logger.error(f"Failed to sync broker data: {e}")
+                last_broker_sync = time.time()
+
+            # Dynamically adding portfolio symbols here slowed down Yahoo Finance significantly,
+            # so we keep the watchlist to the core symbols only.
+
             watchlist_payload = []
             
-            for sym in symbols:
-                df = yf.download(sym, period="5d", interval="1m", progress=False)
-                if df.empty:
-                    continue
-                
-                # Create candle objects
-                candles = []
-                # Ensure we handle pandas 2.0+ correctly where columns might be multiindex
-                for _, row in df.iterrows():
-                    o = float(row['Open'].iloc[0]) if isinstance(row['Open'], (list, tuple, type(df))) or hasattr(row['Open'], 'iloc') else float(row['Open'])
-                    h = float(row['High'].iloc[0]) if isinstance(row['High'], (list, tuple, type(df))) or hasattr(row['High'], 'iloc') else float(row['High'])
-                    l = float(row['Low'].iloc[0]) if isinstance(row['Low'], (list, tuple, type(df))) or hasattr(row['Low'], 'iloc') else float(row['Low'])
-                    c = float(row['Close'].iloc[0]) if isinstance(row['Close'], (list, tuple, type(df))) or hasattr(row['Close'], 'iloc') else float(row['Close'])
-                    v = float(row['Volume'].iloc[0]) if isinstance(row['Volume'], (list, tuple, type(df))) or hasattr(row['Volume'], 'iloc') else float(row['Volume'])
-                    candles.append(YFCandle(o, h, l, c, v))
-                    
-                if not candles:
-                    continue
-                
-                current_price = candles[-1].close
-                prev_close = candles[-2].close if len(candles) > 1 else current_price
-                change = ((current_price - prev_close) / prev_close) * 100 if prev_close else 0.0
-                
-                snapshot = get_feature_snapshot(candles)
-                account_state = AccountState(available_margin=500000.0, unrealized_pnl=0.0, realized_pnl=0.0)
-                
+            # Fetch all symbols concurrently to prevent event-loop blocking
+            tasks = [asyncio.to_thread(yf.download, sym, period="5d", interval="1m", progress=False) for sym in symbols]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            source_ts = time.time() # Timestamp when data was received from source
+            
+            for sym, result in zip(symbols, results):
+
                 try:
-                    kite_symbol = f"NSE:{display_symbols[sym]}"
-                    quotes = broker.get_quote([kite_symbol])
-                    quote_data = quotes.get(kite_symbol) if quotes else None
-                except Exception:
-                    quote_data = None
-                
-                pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager)
-                candidate_trade, order, msg = pipeline.process_tick(
-                    symbol=display_symbols[sym],
-                    candles=candles,
-                    market_snapshot=snapshot,
-                    indicators=snapshot,
-                    account_state=account_state,
-                    quote_data=quote_data
-                )
-                
-                signal_str = candidate_trade.direction.name if candidate_trade else "HOLD"
-                if candidate_trade and candidate_trade.direction == SignalDirection.HOLD:
-                    signal_str = "HOLD"
+                    if isinstance(result, Exception):
+                        continue
                     
-                watchlist_payload.append({
-                    "symbol": display_symbols[sym],
-                    "ltp": current_price,
-                    "change": change,
-                    "signal": signal_str
-                })
+                    df = result
+                    if df.empty:
+                        continue
                 
-                if candidate_trade and candidate_trade.direction != SignalDirection.HOLD:
-                    trade_id = f"t{random.randint(1000, 9999)}"
-                    cand_dict = {
-                        "id": trade_id,
-                        "symbol": candidate_trade.symbol,
-                        "action": candidate_trade.direction.name,
-                        "reasoning": candidate_trade.reasoning,
-                        "price": candidate_trade.entry_price
-                    }
-                    candidate_cache[trade_id] = cand_dict
+                    # Create candle objects
+                    candles = []
+                    # Ensure we handle pandas 2.0+ correctly where columns might be multiindex
+                    for _, row in df.iterrows():
+                        o = float(row['Open'].iloc[0]) if isinstance(row['Open'], (list, tuple, type(df))) or hasattr(row['Open'], 'iloc') else float(row['Open'])
+                        h = float(row['High'].iloc[0]) if isinstance(row['High'], (list, tuple, type(df))) or hasattr(row['High'], 'iloc') else float(row['High'])
+                        l = float(row['Low'].iloc[0]) if isinstance(row['Low'], (list, tuple, type(df))) or hasattr(row['Low'], 'iloc') else float(row['Low'])
+                        c = float(row['Close'].iloc[0]) if isinstance(row['Close'], (list, tuple, type(df))) or hasattr(row['Close'], 'iloc') else float(row['Close'])
+                        v = float(row['Volume'].iloc[0]) if isinstance(row['Volume'], (list, tuple, type(df))) or hasattr(row['Volume'], 'iloc') else float(row['Volume'])
+                        candles.append(YFCandle(o, h, l, c, v))
                     
-                    log_audit_event("SIGNAL", trade_id, cand_dict["symbol"], cand_dict["action"], f"AI Reasoning: {cand_dict['reasoning']}")
+                    if not candles:
+                        continue
+                
+                    current_price = candles[-1].close
+                
+                    # Calculate daily change relative to the previous trading day's close
+                    try:
+                        last_date = df.index[-1].date()
+                        prev_day_data = df[df.index.date < last_date]
+                        if not prev_day_data.empty:
+                            pc = prev_day_data['Close'].iloc[-1]
+                            prev_close = float(pc.iloc[0]) if hasattr(pc, 'iloc') else float(pc)
+                        else:
+                            # Fallback to the very first candle in the 5d window
+                            pc = df['Close'].iloc[0]
+                            prev_close = float(pc.iloc[0]) if hasattr(pc, 'iloc') else float(pc)
+                    except Exception:
+                        prev_close = current_price
                     
-                    if active_connections:
-                        for connection in active_connections:
-                            try:
-                                await connection.send_text(json.dumps({
-                                    "type": "candidate_trade",
-                                    "candidate": cand_dict
-                                }))
-                            except Exception:
-                                pass
+                    change = ((current_price - prev_close) / prev_close) * 100 if prev_close else 0.0
+                
+                    snapshot = get_feature_snapshot(candles)
+                    account_state = AccountState(available_margin=500000.0, unrealized_pnl=0.0, realized_pnl=0.0)
+                
+                    try:
+                        kite_symbol = f"NSE:{display_symbols[sym]}"
+                        quotes = broker.get_quote([kite_symbol])
+                        quote_data = quotes.get(kite_symbol) if quotes else None
+                    except Exception:
+                        quote_data = None
+                    
+                    # Use real-time broker data for the UI if available (yfinance can be delayed)
+                    if quote_data:
+                        current_price = quote_data.get("last_price", current_price)
+                        kite_prev_close = quote_data.get("ohlc", {}).get("close")
+                        if kite_prev_close and kite_prev_close > 0:
+                            change = ((current_price - kite_prev_close) / kite_prev_close) * 100
+                
+                    pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager)
+                    candidate_trade, order, msg = pipeline.process_tick(
+                        symbol=display_symbols[sym],
+                        candles=candles,
+                        market_snapshot=snapshot,
+                        indicators=snapshot,
+                        account_state=account_state,
+                        quote_data=quote_data
+                    )
+                
+                    signal_str = candidate_trade.direction.name if candidate_trade else "HOLD"
+                    if candidate_trade and candidate_trade.direction == SignalDirection.HOLD:
+                        signal_str = "HOLD"
+                    
+                    watchlist_payload.append({
+                        "symbol": display_symbols[sym],
+                        "ltp": current_price,
+                        "change": change,
+                        "signal": signal_str,
+                        "source_ts": source_ts
+                    })
+                
+                    if candidate_trade and candidate_trade.direction != SignalDirection.HOLD:
+                        trade_id = f"t{random.randint(1000, 9999)}"
+                    
+                        if order:
+                            # Trade was autonomously executed by the pipeline
+                            log_audit_event("ORDER_EVENT", trade_id, candidate_trade.symbol, "AUTONOMOUS", f"Broker ID: {order.broker_order_id} | {msg}")
+                        else:
+                            cand_dict = {
+                                "id": trade_id,
+                                "symbol": candidate_trade.symbol,
+                                "action": candidate_trade.direction.name,
+                                "reasoning": candidate_trade.reasoning,
+                                "price": candidate_trade.entry_price
+                            }
+                            candidate_cache[trade_id] = cand_dict
+                        
+                            log_audit_event("SIGNAL", trade_id, cand_dict["symbol"], cand_dict["action"], f"AI Reasoning: {cand_dict['reasoning']} ({msg})")
+                        
+                            if active_connections:
+                                for connection in active_connections:
+                                    try:
+                                        await connection.send_text(json.dumps({
+                                            "type": "candidate_trade",
+                                            "candidate": cand_dict
+                                        }))
+                                    except Exception:
+                                        pass
                                 
+
+
+                except Exception as e:
+                    logger.error(f"Error processing symbol {sym}: {e}")
+                    continue
             # Broadcast market update
-            if active_connections and watchlist_payload:
+            if active_connections:
                 try:
-                    positions_data = broker.get_positions()
-                    pos_list = positions_data.get("net", []) if positions_data else []
+                    pos_list = cached_positions
+                    holdings_list = cached_holdings
+                    
+                    quote_symbols = set()
+                    for p in pos_list:
+                        if p.get("quantity", 0) != 0 and p.get("tradingsymbol"):
+                            quote_symbols.add(f"NSE:{p.get('tradingsymbol')}")
+                    for h in holdings_list:
+                        if h.get("tradingsymbol"):
+                            quote_symbols.add(f"NSE:{h.get('tradingsymbol')}")
+                            
+                    portfolio_quotes = {}
+                    if quote_symbols:
+                        try:
+                            portfolio_quotes = broker.get_quote(list(quote_symbols)) or {}
+                        except Exception as e:
+                            logger.error(f"Failed to fetch quotes for portfolio: {e}")
                     
                     frontend_positions = []
                     for p in pos_list:
                         if p.get("quantity", 0) != 0:
                             sym = p.get("tradingsymbol")
+                            kite_sym = f"NSE:{sym}"
+                            
                             ltp = 0.0
-                            for w in watchlist_payload:
-                                if w["symbol"] == sym:
-                                    ltp = w["ltp"]
-                                    break
+                            if kite_sym in portfolio_quotes:
+                                ltp = portfolio_quotes[kite_sym].get("last_price", 0.0)
+                            else:
+                                for w in watchlist_payload:
+                                    if w["symbol"] == sym:
+                                        ltp = w["ltp"]
+                                        break
                             
                             frontend_positions.append({
                                 "symbol": sym,
@@ -167,23 +251,51 @@ async def simulate_trades_stream():
                                 "avg": p.get("average_price", 0.0),
                                 "ltp": ltp
                             })
+                            
                 except Exception as e:
-                    logger.error(f"Failed to fetch positions for broadcast: {e}")
+                    logger.error(f"Failed to process positions: {e}")
                     frontend_positions = []
                     
+                try:
+                    margin_data = broker.get_margins()
+                    if margin_data and "equity" in margin_data:
+                        available_margin = margin_data["equity"].get("available", {}).get("live_balance", 0)
+                    else:
+                        available_margin = 0
+                except Exception:
+                    available_margin = 0
+                    
+                for h in holdings_list:
+                    sym = h.get("tradingsymbol")
+                    kite_sym = f"NSE:{sym}"
+                    if kite_sym in portfolio_quotes:
+                        h["last_price"] = portfolio_quotes[kite_sym].get("last_price", h.get("last_price", 0.0))
+                    else:
+                        for w in watchlist_payload:
+                            if w["symbol"] == sym:
+                                h["last_price"] = w["ltp"]
+                                break
+                    
+                backend_ts = time.time()
                 for connection in active_connections:
                     try:
                         await connection.send_text(json.dumps({
                             "type": "market_update",
                             "watchlist": watchlist_payload,
-                            "positions": frontend_positions
+                            "positions": frontend_positions,
+                            "holdings": holdings_list,
+                            "account_stats": {
+                                "margin": available_margin,
+                                "realized_pnl": 0 # Realized PNL calculation can be added later
+                            },
+                            "backend_ts": backend_ts
                         }))
                     except Exception:
                         pass
         except Exception as e:
             logger.error(f"Error in live market simulation: {e}")
             
-        await asyncio.sleep(60) # Poll every 1 minute
+        await asyncio.sleep(0.5) # Non-blocking poll every 0.5 seconds
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

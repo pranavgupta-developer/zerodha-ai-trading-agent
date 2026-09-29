@@ -42,6 +42,17 @@ class BrokerAdapter:
         self.kite: KiteConnect = KiteConnect(api_key=self.api_key)
         self._access_token: Optional[str] = None
         self._dry_run_file = "dry_run_state.json"
+        
+        # Recover dev session
+        try:
+            import os
+            if os.path.exists(".kite_session"):
+                with open(".kite_session", "r") as f:
+                    token = f.read().strip()
+                    if token:
+                        self.set_access_token(token)
+        except Exception:
+            pass
 
     def _load_dry_run_state(self) -> Dict[str, Any]:
         if os.path.exists(self._dry_run_file):
@@ -79,6 +90,11 @@ class BrokerAdapter:
             ) # type: ignore
             self._access_token = session_data.get("access_token") # type: ignore
             self.kite.set_access_token(self._access_token)
+            
+            # Persist token for dev reloads
+            with open(".kite_session", "w") as f:
+                f.write(self._access_token)
+                
             logger.info("Successfully generated session and set access token.")
             return session_data # type: ignore
         except kite_exc.TokenException as e:
@@ -166,6 +182,24 @@ class BrokerAdapter:
             raise
         except Exception as e:
             logger.error(f"Error fetching positions: {str(e)}")
+            raise
+
+    @broker_retry(retries=3, delay=1.0)
+    def get_holdings(self) -> list[Dict[str, Any]]:
+        """
+        Fetch long term portfolio holdings.
+        """
+        if settings.TRADING_MODE == "DRY_RUN":
+            return []
+            
+        self._ensure_authenticated()
+        try:
+            return self.kite.holdings() # type: ignore
+        except kite_exc.TokenException as e:
+            logger.error(f"Invalid or expired token when fetching holdings: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching holdings: {str(e)}")
             raise
 
     @broker_retry(retries=3, delay=1.0)
@@ -298,5 +332,7 @@ class BrokerAdapter:
         try:
             return self.kite.quote(symbols) # type: ignore
         except Exception as e:
-            logger.error(f"Error fetching quote for {symbols}: {str(e)}")
+            err_msg = str(e)
+            if "Insufficient permission" not in err_msg:
+                logger.error(f"Error fetching quote for {symbols}: {err_msg}")
             raise

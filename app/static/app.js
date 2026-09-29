@@ -1,17 +1,6 @@
-// Mock Data for the Dashboard Skeleton
-
-const mockWatchlist = [
-    { symbol: 'RELIANCE', ltp: 2984.50, change: 1.2, signal: 'BUY' },
-    { symbol: 'TCS', ltp: 4120.00, change: -0.5, signal: 'HOLD' },
-    { symbol: 'HDFCBANK', ltp: 1650.25, change: 0.8, signal: 'BUY' },
-    { symbol: 'INFY', ltp: 1540.10, change: -1.2, signal: 'SELL' },
-    { symbol: 'ICICIBANK', ltp: 1080.40, change: 0.3, signal: 'HOLD' }
-];
-
-const mockPositions = [
-    { symbol: 'RELIANCE', qty: 50, avg: 2950.00, ltp: 2984.50 },
-    { symbol: 'TCS', qty: -20, avg: 4150.00, ltp: 4120.00 },
-];
+// Real-time Data for the Dashboard
+const mockWatchlist = [];
+const mockPositions = [];
 
 function formatCurrency(value) {
     return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(value);
@@ -28,8 +17,18 @@ function renderWatchlist() {
         const changePrefix = item.change >= 0 ? '+' : '';
         const signalClass = `signal-${item.signal.toLowerCase()}`;
         
+        // Calculate latencies
+        const frontend_ts = Date.now() / 1000; // in seconds
+        const source_latency = window.current_backend_ts ? (window.current_backend_ts - item.source_ts).toFixed(3) : "0.000";
+        const total_latency = (frontend_ts - item.source_ts).toFixed(3);
+        
         tr.innerHTML = `
-            <td style="font-weight: 600;">${item.symbol}</td>
+            <td style="font-weight: 600;">
+                ${item.symbol}
+                <div style="font-size: 0.65rem; color: var(--text-muted); font-weight: normal; margin-top: 4px;">
+                    Latency: src->backend ${source_latency}s | src->ui ${total_latency}s
+                </div>
+            </td>
             <td>₹${item.ltp.toFixed(2)}</td>
             <td class="${changeClass}">${changePrefix}${item.change.toFixed(2)}%</td>
             <td><span class="signal-badge ${signalClass}">${item.signal}</span></td>
@@ -63,13 +62,40 @@ function renderPositions() {
         tbody.appendChild(tr);
     });
     
-    // Update summary cards
-    document.getElementById('margin-val').textContent = formatCurrency(450000);
-    document.getElementById('realized-pnl-val').textContent = formatCurrency(2500);
-    
+    // Update summary cards with total unrealized PnL based on positions
     const unrealizedEl = document.getElementById('unrealized-pnl-val');
     unrealizedEl.textContent = formatCurrency(totalUnrealized);
     unrealizedEl.className = `value ${totalUnrealized >= 0 ? 'positive' : 'negative'}`;
+}
+
+const mockHoldings = [];
+
+function renderHoldings() {
+    const tbody = document.querySelector('#holdings-table tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    
+    mockHoldings.forEach(hold => {
+        // Handle variations in Kite API naming
+        const symbol = hold.tradingsymbol || hold.symbol;
+        const qty = hold.quantity || hold.qty;
+        const avg = hold.average_price || hold.avg || 0;
+        const ltp = hold.last_price || hold.ltp || hold.price || 0;
+        const pnl = hold.pnl || ((ltp - avg) * qty);
+        
+        const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+        const pnlPrefix = pnl >= 0 ? '+' : '';
+        
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td style="font-weight: 600;">${symbol}</td>
+            <td>${qty}</td>
+            <td>₹${avg.toFixed(2)}</td>
+            <td>₹${ltp.toFixed(2)}</td>
+            <td class="${pnlClass}">${pnlPrefix}₹${Math.abs(pnl).toFixed(2)}</td>
+        `;
+        tbody.appendChild(tr);
+    });
 }
 
 function updateTime() {
@@ -95,8 +121,21 @@ function setupWebSocket() {
                 mockPositions.push(...data.positions);
             }
             
+            if (data.holdings) {
+                mockHoldings.length = 0;
+                mockHoldings.push(...data.holdings);
+            }
+            
+            if (data.account_stats) {
+                document.getElementById('margin-val').textContent = formatCurrency(data.account_stats.margin);
+                document.getElementById('realized-pnl-val').textContent = formatCurrency(data.account_stats.realized_pnl);
+            }
+            
+            window.current_backend_ts = data.backend_ts;
+            
             renderWatchlist();
             renderPositions();
+            renderHoldings();
             updateTime();
         } else if (data.type === 'candidate_trade') {
             renderCandidate(data.candidate);
@@ -293,6 +332,7 @@ async function fetchAuditLogs() {
 document.addEventListener('DOMContentLoaded', () => {
     renderWatchlist();
     renderPositions();
+    renderHoldings();
     updateTime();
     setupWebSocket();
     fetchSystemStatus();

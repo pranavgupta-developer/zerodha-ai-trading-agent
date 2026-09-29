@@ -101,6 +101,26 @@
                         </tbody>
                     </table>
                 </div>
+                <div class="panel-header" style="margin-top: 24px;">
+                    <h2>Holdings (Portfolio)</h2>
+                </div>
+                
+                <div class="table-container" style="max-height: 200px; overflow-y: auto;">
+                    <table class="data-table" id="holdings-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Qty</th>
+                                <th>Avg Price</th>
+                                <th>LTP</th>
+                                <th>P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
             </section>
             
             <!-- Bottom Row: Candidate Trades -->
@@ -156,6 +176,6 @@
         </main>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=4"></script>
 </body>
 </html>
