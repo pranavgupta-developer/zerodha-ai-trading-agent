@@ -18,6 +18,8 @@ from app.trading.risk_engine import RiskEngine, RiskConfig, AccountState
 from app.trading.order_manager import OrderManager
 from app.trading.signals import Signal, SignalDirection
 from datetime import datetime
+from app.broker.ticker import MarketTicker
+
 from app.trading.pipeline import TradingPipeline
 from app.trading.strategy import EmaCrossoverRsiStrategy
 from app.agent.service import AgentService
@@ -27,6 +29,177 @@ logger = logging.getLogger(__name__)
 active_connections: list[WebSocket] = []
 candidate_cache: dict = {}
 EMERGENCY_STOP_ACTIVE = False
+
+import threading
+import time
+
+class ThreadSafePriceCache:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._cache = {}
+
+    def update(self, token, ltp: float):
+        try:
+            token_int = int(token)
+        except (ValueError, TypeError):
+            return
+            
+        with self._lock:
+            self._cache[token_int] = {
+                "ltp": float(ltp),
+                "timestamp": time.time()
+            }
+
+    def get(self, token, default_ltp: float = 0.0) -> float:
+        try:
+            token_int = int(token)
+        except (ValueError, TypeError):
+            return default_ltp
+            
+        with self._lock:
+            data = self._cache.get(token_int)
+            if data:
+                return data["ltp"]
+            return default_ltp
+
+price_cache = ThreadSafePriceCache()
+global_holdings: list = []
+global_positions: list = []
+global_available_margin: float = 0.0
+market_ticker = None
+current_watchlist_payload: list = []
+
+def start_ticker():
+    global market_ticker, price_cache
+    if market_ticker:
+        try:
+            market_ticker.stop()
+        except:
+            pass
+            
+    if not broker._access_token:
+        return
+        
+    try:
+        market_ticker = MarketTicker(broker.api_key, broker._access_token)
+        tokens = []
+        token_to_symbol = {}
+        for p in global_positions:
+            if p.get("instrument_token"): 
+                t_int = int(p.get("instrument_token"))
+                tokens.append(t_int)
+                token_to_symbol[t_int] = p.get("tradingsymbol")
+        for h in global_holdings:
+            if h.get("instrument_token"): 
+                t_int = int(h.get("instrument_token"))
+                tokens.append(t_int)
+                token_to_symbol[t_int] = h.get("tradingsymbol")
+        
+        if tokens:
+            market_ticker.watchlist = list(set(tokens))
+        
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+
+        def on_ticks(ticks):
+            for tick in ticks:
+                token = tick.get("instrument_token")
+                if token and "last_price" in tick:
+                    price_cache.update(token, float(tick["last_price"]))
+                    logger.info(f"PriceCache updated: {token} -> {tick['last_price']}")
+                
+        market_ticker.on_ticks_callback = on_ticks
+        market_ticker.start(threaded=True)
+        
+        # Start the 1-second portfolio broadcast loop
+        if loop:
+            asyncio.create_task(portfolio_broadcast_loop())
+    except Exception as e:
+        logger.error(f"Failed to start KiteTicker: {e}")
+
+_broadcast_loop_started = False
+
+async def portfolio_broadcast_loop():
+    global _broadcast_loop_started
+    if _broadcast_loop_started:
+        return
+    _broadcast_loop_started = True
+    while True:
+        try:
+            await broadcast_portfolio_update()
+        except Exception as e:
+            logger.error(f"Error in portfolio broadcast loop: {e}")
+        await asyncio.sleep(1)
+
+async def broadcast_portfolio_update():
+    if not active_connections:
+        return
+        
+    logger.info("Broadcasting portfolio update to dashboard...")
+        
+    frontend_positions = []
+    for p in global_positions:
+        if p.get("quantity", 0) != 0:
+            sym = p.get("tradingsymbol")
+            token = p.get("instrument_token")
+            # Fallback to last_price if no ticks have arrived yet
+            ltp = price_cache.get(token, 0.0)
+            if ltp == 0.0:
+                ltp = p.get("last_price", 0.0)
+                
+            avg_price = p.get("average_price", 0.0)
+            qty = p.get("quantity", 0)
+            
+            frontend_positions.append({
+                "symbol": sym,
+                "qty": qty,
+                "avg": avg_price,
+                "ltp": ltp
+            })
+            
+    frontend_holdings = []
+    for h in global_holdings:
+        sym = h.get("tradingsymbol")
+        token = h.get("instrument_token")
+        # Fallback to last_price if no ticks have arrived yet
+        ltp = price_cache.get(token, 0.0)
+        if ltp == 0.0:
+            ltp = h.get("last_price", 0.0)
+            
+        avg_price = h.get("average_price", 0.0)
+        qty = h.get("quantity", 0)
+        
+        pnl = (ltp - avg_price) * qty
+        
+        frontend_holdings.append({
+            "tradingsymbol": sym,
+            "quantity": qty,
+            "average_price": avg_price,
+            "last_price": ltp,
+            "pnl": pnl,
+            "instrument_token": token
+        })
+        
+    payload = json.dumps({
+        "type": "market_update",
+        "watchlist": current_watchlist_payload,
+        "positions": frontend_positions,
+        "holdings": frontend_holdings,
+        "account_stats": {
+            "margin": global_available_margin,
+            "realized_pnl": 0
+        },
+        "backend_ts": time.time()
+    })
+    
+    for connection in active_connections:
+        try:
+            await connection.send_text(payload)
+        except Exception:
+            pass
+
 
 def log_audit_event(event_type: str, trade_id: str, symbol: str, action: str, details: str):
     db = SessionLocal()
@@ -58,8 +231,8 @@ async def simulate_trades_stream():
     import yfinance as yf
     from app.utils.indicators import get_feature_snapshot
     
-    # You can add or remove Yahoo Finance symbols (e.g., '.NS' for NSE) here:
-    symbols = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"]
+    # Use the configurable list of symbols from the .env file (or defaults)
+    symbols = [s.strip() for s in settings.TRADING_SYMBOLS.split(",") if s.strip()]
     display_symbols = {s: s.replace(".NS", "") for s in symbols}
     
     # Initialize the real pipeline
@@ -68,37 +241,37 @@ async def simulate_trades_stream():
     # Using the global risk_engine and order_manager defined below (we can just reference them since they are global)
     
 
-    last_broker_sync = 0
-    cached_holdings = []
-    cached_positions = []
+    global current_watchlist_payload
     
     while True:
         try:
-            # Sync broker data every 10 seconds to avoid rate limits
-            if time.time() - last_broker_sync > 10:
-                try:
-                    cached_holdings = broker.get_holdings() or []
-                    cached_positions_data = broker.get_positions()
-                    cached_positions = cached_positions_data.get("net", []) if cached_positions_data else []
-                except Exception as e:
-                    logger.error(f"Failed to sync broker data: {e}")
-                last_broker_sync = time.time()
-
-            # Dynamically adding portfolio symbols here slowed down Yahoo Finance significantly,
-            # so we keep the watchlist to the core symbols only.
+            # Dynamically pull user's portfolio to monitor for automated trading
+            portfolio_symbols = set()
+            for h in global_holdings:
+                sym = h.get("tradingsymbol")
+                if sym:
+                    portfolio_symbols.add(f"{sym}.NS")
+            for p in global_positions:
+                sym = p.get("tradingsymbol")
+                if sym:
+                    portfolio_symbols.add(f"{sym}.NS")
+                    
+            # Combine hardcoded watchlist with live portfolio
+            active_symbols = list(set(symbols) | portfolio_symbols)
+            display_symbols = {s: s.replace(".NS", "") for s in active_symbols}
 
             watchlist_payload = []
             
             # Fetch all symbols concurrently to prevent event-loop blocking
-            tasks = [asyncio.to_thread(yf.download, sym, period="5d", interval="1m", progress=False) for sym in symbols]
+            tasks = [asyncio.to_thread(yf.download, sym, period="5d", interval="1m", progress=False) for sym in active_symbols]
             
             results = await asyncio.gather(*tasks, return_exceptions=True)
             source_ts = time.time() # Timestamp when data was received from source
             
-            for sym, result in zip(symbols, results):
+            for sym, result in zip(active_symbols, results):
 
                 try:
-                    if isinstance(result, Exception):
+                    if isinstance(result, BaseException):
                         continue
                     
                     df = result
@@ -154,15 +327,20 @@ async def simulate_trades_stream():
                         if kite_prev_close and kite_prev_close > 0:
                             change = ((current_price - kite_prev_close) / kite_prev_close) * 100
                 
-                    pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager)
-                    candidate_trade, order, msg = pipeline.process_tick(
-                        symbol=display_symbols[sym],
-                        candles=candles,
-                        market_snapshot=snapshot,
-                        indicators=snapshot,
-                        account_state=account_state,
-                        quote_data=quote_data
-                    )
+                    if EMERGENCY_STOP_ACTIVE:
+                        candidate_trade = None
+                        order = None
+                        msg = "Emergency stop active"
+                    else:
+                        pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager)
+                        candidate_trade, order, msg = pipeline.process_tick(
+                            symbol=display_symbols[sym],
+                            candles=candles,
+                            market_snapshot=snapshot,
+                            indicators=snapshot,
+                            account_state=account_state,
+                            quote_data=quote_data
+                        )
                 
                     signal_str = candidate_trade.direction.name if candidate_trade else "HOLD"
                     if candidate_trade and candidate_trade.direction == SignalDirection.HOLD:
@@ -209,89 +387,8 @@ async def simulate_trades_stream():
                 except Exception as e:
                     logger.error(f"Error processing symbol {sym}: {e}")
                     continue
-            # Broadcast market update
-            if active_connections:
-                try:
-                    pos_list = cached_positions
-                    holdings_list = cached_holdings
-                    
-                    quote_symbols = set()
-                    for p in pos_list:
-                        if p.get("quantity", 0) != 0 and p.get("tradingsymbol"):
-                            quote_symbols.add(f"NSE:{p.get('tradingsymbol')}")
-                    for h in holdings_list:
-                        if h.get("tradingsymbol"):
-                            quote_symbols.add(f"NSE:{h.get('tradingsymbol')}")
-                            
-                    portfolio_quotes = {}
-                    if quote_symbols:
-                        try:
-                            portfolio_quotes = broker.get_quote(list(quote_symbols)) or {}
-                        except Exception as e:
-                            logger.error(f"Failed to fetch quotes for portfolio: {e}")
-                    
-                    frontend_positions = []
-                    for p in pos_list:
-                        if p.get("quantity", 0) != 0:
-                            sym = p.get("tradingsymbol")
-                            kite_sym = f"NSE:{sym}"
-                            
-                            ltp = 0.0
-                            if kite_sym in portfolio_quotes:
-                                ltp = portfolio_quotes[kite_sym].get("last_price", 0.0)
-                            else:
-                                for w in watchlist_payload:
-                                    if w["symbol"] == sym:
-                                        ltp = w["ltp"]
-                                        break
-                            
-                            frontend_positions.append({
-                                "symbol": sym,
-                                "qty": p.get("quantity"),
-                                "avg": p.get("average_price", 0.0),
-                                "ltp": ltp
-                            })
-                            
-                except Exception as e:
-                    logger.error(f"Failed to process positions: {e}")
-                    frontend_positions = []
-                    
-                try:
-                    margin_data = broker.get_margins()
-                    if margin_data and "equity" in margin_data:
-                        available_margin = margin_data["equity"].get("available", {}).get("live_balance", 0)
-                    else:
-                        available_margin = 0
-                except Exception:
-                    available_margin = 0
-                    
-                for h in holdings_list:
-                    sym = h.get("tradingsymbol")
-                    kite_sym = f"NSE:{sym}"
-                    if kite_sym in portfolio_quotes:
-                        h["last_price"] = portfolio_quotes[kite_sym].get("last_price", h.get("last_price", 0.0))
-                    else:
-                        for w in watchlist_payload:
-                            if w["symbol"] == sym:
-                                h["last_price"] = w["ltp"]
-                                break
-                    
-                backend_ts = time.time()
-                for connection in active_connections:
-                    try:
-                        await connection.send_text(json.dumps({
-                            "type": "market_update",
-                            "watchlist": watchlist_payload,
-                            "positions": frontend_positions,
-                            "holdings": holdings_list,
-                            "account_stats": {
-                                "margin": available_margin,
-                                "realized_pnl": 0 # Realized PNL calculation can be added later
-                            },
-                            "backend_ts": backend_ts
-                        }))
-                    except Exception:
-                        pass
+            current_watchlist_payload = watchlist_payload
+            await broadcast_portfolio_update()
         except Exception as e:
             logger.error(f"Error in live market simulation: {e}")
             
@@ -305,9 +402,28 @@ async def lifespan(app: FastAPI):
     # Recover state
     order_manager.recover_state()
     
+    global global_holdings, global_positions, global_available_margin, market_ticker
+    try:
+        if broker._access_token or settings.TRADING_MODE == "DRY_RUN":
+            try:
+                global_holdings = broker.get_holdings() or []
+                pos_data = broker.get_positions()
+                global_positions = pos_data.get("net", []) if pos_data else []
+                margin_data = broker.get_margins()
+                if margin_data and "equity" in margin_data:
+                    global_available_margin = margin_data["equity"].get("available", {}).get("live_balance", 0)
+                
+                start_ticker()
+            except Exception as e:
+                logger.error(f"Failed to fetch initial portfolio/start ticker: {e}")
+    except Exception as e:
+        logger.error(f"Lifespan initialization error: {e}")
+    
     task = asyncio.create_task(simulate_trades_stream())
     yield
     task.cancel()
+    if market_ticker:
+        market_ticker.stop()
     
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 broker = BrokerAdapter()
@@ -341,6 +457,21 @@ def auth_callback(request_token: str, action: Optional[str] = None, type: Option
     try:
         session_data = broker.generate_session(request_token)
         # TODO: Store session_data["access_token"] securely at rest (e.g., SQLite / Encrypted file)
+        
+        # Refresh holdings and positions with new token
+        global global_holdings, global_positions, global_available_margin
+        try:
+            global_holdings = broker.get_holdings() or []
+            pos_data = broker.get_positions()
+            global_positions = pos_data.get("net", []) if pos_data else []
+            margin_data = broker.get_margins()
+            if margin_data and "equity" in margin_data:
+                global_available_margin = margin_data["equity"].get("available", {}).get("live_balance", 0)
+            
+            start_ticker()
+        except Exception as e:
+            logger.error(f"Failed to fetch portfolio after auth: {e}")
+            
         return {"status": "success", "message": "Authenticated successfully."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -466,11 +597,9 @@ def handle_trade_action(action: TradeActionReq):
 
 @app.post("/api/v1/trades/close")
 def close_trade_position(req: TradeCloseReq):
-    global EMERGENCY_STOP_ACTIVE
+    # During an emergency stop, we MUST allow the user to close positions!
+    # Removed the EMERGENCY_STOP_ACTIVE block so they can exit safely.
     
-    if EMERGENCY_STOP_ACTIVE:
-        raise HTTPException(status_code=400, detail="Emergency Stop is active. Cannot place closing order.")
-        
     symbol = req.symbol
     qty = req.quantity
     

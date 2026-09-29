@@ -12,8 +12,14 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./trading_agent.db"
     
     # Environment (DRY_RUN vs LIVE)
-    TRADING_MODE: str = "DRY_RUN"
+    TRADING_MODE: str = "LIVE"
     
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # AI Settings
+    GEMINI_API_KEY: str | None = None
+
+    # Watchlist for automated trading (comma-separated Yahoo Finance symbols)
+    TRADING_SYMBOLS: str = "RELIANCE.NS,TCS.NS,INFY.NS,HDFCBANK.NS,ICICIBANK.NS"
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings() # type: ignore
