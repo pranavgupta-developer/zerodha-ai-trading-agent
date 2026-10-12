@@ -10,8 +10,10 @@ class RiskConfig(BaseModel):
     max_orders_per_day: int = 50             # Global daily limit
     max_position_size: float = 500000.0      # Max capital in a single symbol
     max_total_exposure: float = 2000000.0    # Max capital across all symbols
+    max_open_positions: int = 10             # Max number of discrete assets to hold
     max_daily_loss: float = 10000.0          # Absolute stop trading if loss > this
     max_daily_loss_pct: float = 0.02         # Or if loss > 2% of actual margin
+    max_drawdown_pct: float = 0.05           # Drawdown from peak limit
     circuit_buffer_pct: float = 0.01         # Must be at least 1% away from circuit limits
     min_volume: int = 50000                  # Minimum daily volume
     max_slippage_pct: float = 0.005          # Max bid-ask spread as % of last price
@@ -20,6 +22,7 @@ class RiskConfig(BaseModel):
 class AccountState(BaseModel):
     """Represents a snapshot of the current portfolio and limits."""
     available_margin: float
+    peak_margin: float = 0.0               # Track highest margin for drawdown calc
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
     open_positions: Dict[str, float] = {}  # symbol -> position value in base currency
@@ -47,7 +50,7 @@ class RiskEngine:
         if self.config.check_market_hours and not is_market_open():
             return False, "Market is closed"
             
-        # 2. Daily Loss Kill-Switch (Dynamic based on real margin)
+        # 2. Daily Loss and Drawdown Kill-Switches
         total_pnl = account.realized_pnl + account.unrealized_pnl
         dynamic_loss_limit = account.available_margin * self.config.max_daily_loss_pct
         effective_loss_limit = min(self.config.max_daily_loss, dynamic_loss_limit)
@@ -55,11 +58,22 @@ class RiskEngine:
         if total_pnl <= -effective_loss_limit:
             return False, f"KILL-SWITCH TRIGGERED: Max daily loss exceeded (PnL: {total_pnl}, Limit: -{effective_loss_limit})"
             
+        current_equity = account.available_margin + total_pnl
+        if account.peak_margin > 0:
+            drawdown = (account.peak_margin - current_equity) / account.peak_margin
+            if drawdown > self.config.max_drawdown_pct:
+                return False, f"KILL-SWITCH TRIGGERED: Max drawdown exceeded ({drawdown*100:.2f}% > {self.config.max_drawdown_pct*100:.2f}%)"
+
         # 3. Order Rate Limits
         if account.orders_placed_today >= self.config.max_orders_per_day:
             return False, "Max orders per day exceeded"
         if account.orders_placed_last_minute >= self.config.max_orders_per_min:
             return False, "Max orders per minute exceeded"
+
+        # 3b. Max Open Positions Check
+        if signal.direction == SignalDirection.BUY and signal.symbol not in account.open_positions:
+            if len(account.open_positions) >= self.config.max_open_positions:
+                return False, f"Max open positions ({self.config.max_open_positions}) reached"
 
         # 4. Max Quantity Check
         if requested_qty > self.config.max_qty_per_order:

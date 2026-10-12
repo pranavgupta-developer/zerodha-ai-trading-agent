@@ -25,8 +25,8 @@ def test_process_ticks_same_minute(mock_session_local, mock_datetime, aggregator
     ticks = [{"instrument_token": 123, "last_price": 100.0, "last_traded_quantity": 10}]
     aggregator.process_ticks(ticks)
 
-    assert 123 in aggregator.current_candles
-    candle = aggregator.current_candles[123]
+    assert 123 in aggregator.current_candles["1m"]
+    candle = aggregator.current_candles["1m"][123]
     assert candle["open"] == 100.0
     assert candle["high"] == 100.0
     assert candle["low"] == 100.0
@@ -40,7 +40,7 @@ def test_process_ticks_same_minute(mock_session_local, mock_datetime, aggregator
     ticks = [{"instrument_token": 123, "last_price": 105.0, "last_traded_quantity": 20}]
     aggregator.process_ticks(ticks)
 
-    candle = aggregator.current_candles[123]
+    candle = aggregator.current_candles["1m"][123]
     assert candle["open"] == 100.0
     assert candle["high"] == 105.0
     assert candle["low"] == 100.0
@@ -80,7 +80,7 @@ def test_process_ticks_minute_rollover(mock_session_local, mock_datetime, aggreg
     assert saved.volume == 10
     
     # The new 9:16 candle is currently building
-    candle = aggregator.current_candles[123]
+    candle = aggregator.current_candles["1m"][123]
     assert candle["open"] == 95.0
     assert candle["close"] == 95.0
     assert candle["volume"] == 15

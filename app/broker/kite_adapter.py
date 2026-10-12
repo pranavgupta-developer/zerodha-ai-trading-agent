@@ -227,6 +227,12 @@ class BrokerAdapter:
         Places an order on Kite Connect. Returns the broker_order_id.
         In DRY_RUN mode, generates a mock ID.
         """
+        if price <= 0.0:
+            order_type = "MARKET"
+        else:
+            # Round price to nearest 0.05 tick size for NSE
+            price = round(price * 20) / 20.0
+            
         if settings.TRADING_MODE == "DRY_RUN":
             import uuid
             mock_id = f"mock_{uuid.uuid4().hex[:12]}"
@@ -264,11 +270,15 @@ class BrokerAdapter:
             return mock_id
             
         self._ensure_authenticated()
+        
+        # Kite expects tradingsymbols without .NS suffix for NSE
+        clean_symbol = symbol.replace(".NS", "")
+        
         try:
             order_id = self.kite.place_order( # type: ignore
                 variety=self.kite.VARIETY_REGULAR, # type: ignore
                 exchange=self.kite.EXCHANGE_NSE, # type: ignore
-                tradingsymbol=symbol,
+                tradingsymbol=clean_symbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
                 product=product,

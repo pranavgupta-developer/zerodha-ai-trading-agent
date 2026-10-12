@@ -8,7 +8,9 @@ You MUST output ONLY valid JSON matching the exact schema below. Do not include 
 1. Market Snapshot: {market_snapshot}
 2. Technical Indicators: {indicators}
 3. Algorithmic Baseline Signal: {baseline_signal}
-4. Portfolio Account State: {account_state}
+4. ML Prediction: {ml_prediction}
+5. Quant Metrics: {quant_metrics}
+6. Portfolio Account State: {account_state}
 
 # CONSTRAINTS & RULES:
 - You must consider the portfolio's `available_margin` and current `open_positions`. Do not propose a trade that exceeds available capital.
@@ -17,7 +19,7 @@ You MUST output ONLY valid JSON matching the exact schema below. Do not include 
 - `approval_required` should be set to true if your `confidence_score` is < 0.85, meaning you want a human to review the trade. Set to false ONLY for extremely high-conviction setups.
 
 # EXPECTED JSON OUTPUT FORMAT:
-{
+{{
     "symbol": "string (e.g., RELIANCE)",
     "direction": "string (BUY, SELL, or HOLD)",
     "qty": "integer (number of shares, 0 if HOLD)",
@@ -27,5 +29,5 @@ You MUST output ONLY valid JSON matching the exact schema below. Do not include 
     "confidence_score": "float (0.0 to 1.0)",
     "reasoning": "string (Concise 2-3 sentence rationale explaining why you accepted/rejected the trade based on indicators and risk)",
     "approval_required": "boolean (true if human review is needed)"
-}
+}}
 """

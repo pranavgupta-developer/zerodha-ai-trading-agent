@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -21,7 +22,7 @@ from datetime import datetime
 from app.broker.ticker import MarketTicker
 
 from app.trading.pipeline import TradingPipeline
-from app.trading.strategy import EmaCrossoverRsiStrategy
+from app.trading.strategy import EmaRsiVwapStrategy
 from app.agent.service import AgentService
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=[logging.StreamHandler(), logging.FileHandler("app.log")])
 logger = logging.getLogger(__name__)
@@ -230,18 +231,23 @@ class YFCandle:
 async def simulate_trades_stream():
     import yfinance as yf
     from app.utils.indicators import get_feature_snapshot
+    from app.broker.market_status import get_market_status
     
     # Use the configurable list of symbols from the .env file (or defaults)
     symbols = [s.strip() for s in settings.TRADING_SYMBOLS.split(",") if s.strip()]
     display_symbols = {s: s.replace(".NS", "") for s in symbols}
     
     # Initialize the real pipeline
-    strategy = EmaCrossoverRsiStrategy()
+    strategy = EmaRsiVwapStrategy()
     agent_service = AgentService()
     # Using the global risk_engine and order_manager defined below (we can just reference them since they are global)
     
 
     global current_watchlist_payload
+    
+    # Cache for yfinance to avoid rate limits
+    last_yf_fetch = 0
+    yf_cache = {}
     
     while True:
         try:
@@ -257,16 +263,32 @@ async def simulate_trades_stream():
                     portfolio_symbols.add(f"{sym}.NS")
                     
             # Combine hardcoded watchlist with live portfolio
-            active_symbols = list(set(symbols) | portfolio_symbols)
+            # active_symbols = list(set(symbols) | portfolio_symbols)
+            active_symbols = list(set(symbols)) # User wants to ONLY trade TATASTEEL
             display_symbols = {s: s.replace(".NS", "") for s in active_symbols}
 
             watchlist_payload = []
             
-            # Fetch all symbols concurrently to prevent event-loop blocking
-            tasks = [asyncio.to_thread(yf.download, sym, period="5d", interval="1m", progress=False) for sym in active_symbols]
+            # Fetch bulk quotes ONCE per loop to avoid Kite rate limits
+            all_kite_symbols = [f"NSE:{display_symbols[s]}" for s in active_symbols]
+            bulk_quotes = {}
+            try:
+                bulk_quotes = await asyncio.to_thread(broker.get_quote, all_kite_symbols)
+            except Exception as e:
+                logger.warning(f"Bulk quote fetch failed: {e}")
+
+            # Fetch all symbols concurrently, but cache to prevent event-loop blocking and yfinance rate limits
+            current_time = time.time()
+            if current_time - last_yf_fetch > 60:
+                tasks = [asyncio.to_thread(yf.download, sym, period="5d", interval="1m", progress=False) for sym in active_symbols]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for sym, result in zip(active_symbols, results):
+                    yf_cache[sym] = result
+                last_yf_fetch = current_time
             
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            source_ts = time.time() # Timestamp when data was received from source
+            # Map cached results
+            results = [yf_cache.get(sym) for sym in active_symbols]
+            source_ts = last_yf_fetch # Timestamp when data was received from source
             
             for sym, result in zip(active_symbols, results):
 
@@ -294,31 +316,50 @@ async def simulate_trades_stream():
                 
                     current_price = candles[-1].close
                 
-                    # Calculate daily change relative to the previous trading day's close
-                    try:
-                        last_date = df.index[-1].date()
-                        prev_day_data = df[df.index.date < last_date]
-                        if not prev_day_data.empty:
-                            pc = prev_day_data['Close'].iloc[-1]
-                            prev_close = float(pc.iloc[0]) if hasattr(pc, 'iloc') else float(pc)
-                        else:
-                            # Fallback to the very first candle in the 5d window
-                            pc = df['Close'].iloc[0]
-                            prev_close = float(pc.iloc[0]) if hasattr(pc, 'iloc') else float(pc)
-                    except Exception:
-                        prev_close = current_price
+                    current_price = candles[-1].close
+                    prev_close = current_price
                     
+                    # Calculate daily change using official daily closes to avoid 1m candle inaccuracies
+                    try:
+                        global _daily_cache
+                        if '_daily_cache' not in globals():
+                            _daily_cache = {}
+                            
+                        import yfinance as yf
+                        from datetime import datetime
+                        cache_key = f"{sym}_{datetime.now().date()}"
+                        
+                        if cache_key not in _daily_cache:
+                            df_daily = yf.download(f"{display_symbols[sym]}.NS", period="5d", interval="1d", progress=False)
+                            if not df_daily.empty and len(df_daily) >= 2:
+                                _daily_cache[cache_key] = {
+                                    "prev_close": float(df_daily['Close'].iloc[-2].iloc[0] if hasattr(df_daily['Close'].iloc[-2], 'iloc') else df_daily['Close'].iloc[-2]),
+                                    "last_close": float(df_daily['Close'].iloc[-1].iloc[0] if hasattr(df_daily['Close'].iloc[-1], 'iloc') else df_daily['Close'].iloc[-1])
+                                }
+                                
+                        if cache_key in _daily_cache:
+                            prev_close = _daily_cache[cache_key]["prev_close"]
+                            # If market is closed, use the official daily close (VWAP) as LTP instead of the 3:29 PM 1m candle
+                            mkt_status_temp = get_market_status(latest_tick_time=df.index[-1].to_pydatetime() if not df.empty else None)
+                            if mkt_status_temp == "CLOSED":
+                                current_price = _daily_cache[cache_key]["last_close"]
+                        else:
+                            # Fallback if daily download fails
+                            last_date = df.index[-1].date()
+                            prev_day_data = df[df.index.date < last_date]
+                            if not prev_day_data.empty:
+                                pc = prev_day_data['Close'].iloc[-1]
+                                prev_close = float(pc.iloc[0]) if hasattr(pc, 'iloc') else float(pc)
+                    except Exception:
+                        pass
+                        
                     change = ((current_price - prev_close) / prev_close) * 100 if prev_close else 0.0
                 
                     snapshot = get_feature_snapshot(candles)
                     account_state = AccountState(available_margin=500000.0, unrealized_pnl=0.0, realized_pnl=0.0)
                 
-                    try:
-                        kite_symbol = f"NSE:{display_symbols[sym]}"
-                        quotes = broker.get_quote([kite_symbol])
-                        quote_data = quotes.get(kite_symbol) if quotes else None
-                    except Exception:
-                        quote_data = None
+                    kite_symbol = f"NSE:{display_symbols[sym]}"
+                    quote_data = bulk_quotes.get(kite_symbol) if bulk_quotes else None
                     
                     # Use real-time broker data for the UI if available (yfinance can be delayed)
                     if quote_data:
@@ -326,11 +367,26 @@ async def simulate_trades_stream():
                         kite_prev_close = quote_data.get("ohlc", {}).get("close")
                         if kite_prev_close and kite_prev_close > 0:
                             change = ((current_price - kite_prev_close) / kite_prev_close) * 100
+                    # Extract the actual timestamp of the latest market data tick/candle
+                    latest_candle_time = None
+                    try:
+                        if quote_data and "timestamp" in quote_data:
+                            latest_candle_time = quote_data["timestamp"]
+                        else:
+                            latest_candle_time = df.index[-1].to_pydatetime()
+                    except Exception:
+                        pass
+                        
+                    mkt_status = get_market_status(latest_tick_time=latest_candle_time)
                 
                     if EMERGENCY_STOP_ACTIVE:
                         candidate_trade = None
                         order = None
                         msg = "Emergency stop active"
+                    elif mkt_status in ["CLOSED", "STALE"] and settings.TRADING_MODE != "DRY_RUN":
+                        candidate_trade = None
+                        order = None
+                        msg = f"Market is {mkt_status}"
                     else:
                         pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager)
                         candidate_trade, order, msg = pipeline.process_tick(
@@ -346,12 +402,23 @@ async def simulate_trades_stream():
                     if candidate_trade and candidate_trade.direction == SignalDirection.HOLD:
                         signal_str = "HOLD"
                     
+                    # Generate mock ML prediction based on RSI and Signal for UI display
+                    ml_predict = "NEUTRAL"
+                    if signal_str == "BUY":
+                        ml_predict = "BULLISH"
+                    elif signal_str == "SELL":
+                        ml_predict = "BEARISH"
+
+                    # We will append the market status to the payload for the frontend
                     watchlist_payload.append({
                         "symbol": display_symbols[sym],
                         "ltp": current_price,
                         "change": change,
                         "signal": signal_str,
-                        "source_ts": source_ts
+                        "status": mkt_status,
+                        "source_ts": source_ts,
+                        "rsi": snapshot.get("rsi_14", 0.0) if snapshot else 0.0,
+                        "ml_predict": ml_predict
                     })
                 
                     if candidate_trade and candidate_trade.direction != SignalDirection.HOLD:
@@ -392,7 +459,7 @@ async def simulate_trades_stream():
         except Exception as e:
             logger.error(f"Error in live market simulation: {e}")
             
-        await asyncio.sleep(0.5) # Non-blocking poll every 0.5 seconds
+        await asyncio.sleep(1.0) # Non-blocking poll every 0.1 seconds
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -426,6 +493,14 @@ async def lifespan(app: FastAPI):
         market_ticker.stop()
     
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 broker = BrokerAdapter()
 risk_engine = RiskEngine(config=RiskConfig(check_market_hours=False))
 order_manager = OrderManager(broker)
@@ -526,6 +601,7 @@ def get_audit_logs():
         return {"logs": [{"timestamp": log.timestamp.isoformat(), "event_type": log.event_type, "trade_id": log.trade_id, "symbol": log.symbol, "action": log.action, "details": log.details} for log in logs]}
     finally:
         db.close()
+
 
 @app.post("/api/v1/trades/action")
 def handle_trade_action(action: TradeActionReq):
@@ -637,3 +713,14 @@ def get_system_status():
         "emergency_stop_active": EMERGENCY_STOP_ACTIVE,
         "trading_mode": settings.TRADING_MODE
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )

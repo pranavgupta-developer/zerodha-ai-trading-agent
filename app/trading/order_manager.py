@@ -5,6 +5,8 @@ from typing import Dict, Optional, List
 from pydantic import BaseModel
 from app.broker.kite_adapter import BrokerAdapter
 from app.trading.signals import Signal, SignalDirection
+from app.agent.schemas import CandidateTrade
+from app.trading.risk_engine import RiskEngine, AccountState
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +34,9 @@ class OrderManager:
     """
     Manages order execution lifecycle, including state transitions, idempotency, and error retries.
     """
-    def __init__(self, broker: BrokerAdapter):
+    def __init__(self, broker: BrokerAdapter, risk_engine: Optional[RiskEngine] = None):
         self.broker = broker
+        self.risk_engine = risk_engine
         self._order_cache: Dict[str, ManagedOrder] = {}
 
     def generate_idempotency_key(self, signal: Signal) -> str:
@@ -164,3 +167,81 @@ class OrderManager:
             logger.info(f"Recovered {len(self._order_cache)} orders into cache.")
         except Exception as e:
             logger.error(f"Failed to recover OrderManager state: {e}")
+
+    def execute_trade(self, trade: CandidateTrade, account: AccountState, idempotency_key: Optional[str] = None) -> ManagedOrder:
+        """
+        Executes a CandidateTrade safely.
+        - Checks for human approval requirement.
+        - Performs a final, immediate second risk check before hitting the broker.
+        """
+        if trade.approval_required:
+            logger.warning(f"Trade for {trade.symbol} rejected: Human approval required.")
+            raise ValueError(f"Human approval required for trade: {trade.symbol}")
+            
+        if self.risk_engine:
+            # We need to construct a Signal object to run it through Risk Engine
+            sig = Signal(
+                symbol=trade.symbol,
+                direction=trade.direction,
+                entry_price=trade.entry_price,
+                stop_loss=trade.stop_loss,
+                take_target=trade.take_target,
+                confidence=trade.confidence_score,
+                timestamp=str(time.time()),
+                reason=trade.reasoning
+            )
+            approved, reason = self.risk_engine.validate_signal(sig, account, trade.qty)
+            if not approved:
+                logger.error(f"Second risk check failed: {reason}")
+                raise ValueError(f"Second risk check failed: {reason}")
+                
+        return self.place_order(
+            signal=Signal(
+                symbol=trade.symbol, direction=trade.direction, entry_price=trade.entry_price,
+                stop_loss=trade.stop_loss, take_target=trade.take_target, confidence=trade.confidence_score,
+                timestamp=str(time.time()), reason=trade.reasoning
+            ),
+            qty=trade.qty,
+            idempotency_key=idempotency_key
+        )
+
+    def modify_order(self, order: ManagedOrder, new_price: float = None, new_qty: int = None) -> ManagedOrder:
+        """Modifies an open order on the broker."""
+        if not order.broker_order_id:
+            raise ValueError("Order does not have a broker ID yet.")
+            
+        if order.state not in [OrderState.OPEN, OrderState.PARTIALLY_FILLED]:
+            raise ValueError(f"Cannot modify order in state {order.state}")
+            
+        try:
+            self.broker.modify_order(
+                order.broker_order_id,
+                price=new_price,
+                quantity=new_qty
+            )
+            if new_price: order.price = new_price
+            if new_qty: order.qty = new_qty
+            logger.info(f"Successfully modified order {order.broker_order_id}")
+        except Exception as e:
+            logger.error(f"Failed to modify order {order.broker_order_id}: {e}")
+            raise e
+            
+        return order
+
+    def cancel_order(self, order: ManagedOrder) -> ManagedOrder:
+        """Cancels an open order on the broker."""
+        if not order.broker_order_id:
+            raise ValueError("Order does not have a broker ID yet.")
+            
+        if order.state not in [OrderState.OPEN, OrderState.PARTIALLY_FILLED]:
+            raise ValueError(f"Cannot cancel order in state {order.state}")
+            
+        try:
+            self.broker.cancel_order(order.broker_order_id)
+            order.state = OrderState.CANCELLED
+            logger.info(f"Successfully cancelled order {order.broker_order_id}")
+        except Exception as e:
+            logger.error(f"Failed to cancel order {order.broker_order_id}: {e}")
+            raise e
+            
+        return order

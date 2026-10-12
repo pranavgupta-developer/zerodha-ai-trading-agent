@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import Mock, patch
 from app.trading.pipeline import TradingPipeline
-from app.trading.strategy import EmaCrossoverRsiStrategy
+from app.trading.strategy import EmaRsiVwapStrategy
 from app.agent.service import AgentService
 from app.trading.risk_engine import RiskEngine, AccountState
 from app.trading.order_manager import OrderManager, ManagedOrder, OrderState
@@ -10,7 +10,7 @@ from app.agent.schemas import CandidateTrade
 
 @pytest.fixture
 def mock_strategy():
-    strategy = Mock(spec=EmaCrossoverRsiStrategy)
+    strategy = Mock(spec=EmaRsiVwapStrategy)
     return strategy
 
 @pytest.fixture

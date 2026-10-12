@@ -7,6 +7,7 @@ class Candle(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     instrument_token = Column(Integer, index=True)
+    interval = Column(String, default='1m', index=True)
     timestamp = Column(DateTime, index=True)
     open = Column(Float)
     high = Column(Float)
@@ -15,7 +16,7 @@ class Candle(Base):
     volume = Column(Integer)
     
     __table_args__ = (
-        UniqueConstraint('instrument_token', 'timestamp', name='uix_instrument_time'),
+        UniqueConstraint('instrument_token', 'interval', 'timestamp', name='uix_instrument_interval_time'),
     )
 
 class Instrument(Base):

@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional, Tuple, Any
 from app.trading.signals import Signal, SignalDirection
-from app.trading.strategy import EmaCrossoverRsiStrategy
+from app.trading.strategy import EmaRsiVwapStrategy
 from app.agent.schemas import CandidateTrade
 from app.agent.service import AgentService
 from app.trading.risk_engine import RiskEngine, AccountState
@@ -16,7 +16,7 @@ class TradingPipeline:
     """
     def __init__(
         self, 
-        strategy: EmaCrossoverRsiStrategy, 
+        strategy: EmaRsiVwapStrategy, 
         agent: AgentService, 
         risk_engine: RiskEngine, 
         order_manager: OrderManager
@@ -55,9 +55,10 @@ class TradingPipeline:
         if candidate_trade.direction == SignalDirection.HOLD:
             return candidate_trade, None, f"AI Agent rejected trade: {candidate_trade.reasoning}"
             
-        if candidate_trade.approval_required:
-            # Awaits human-in-the-loop approval
-            return candidate_trade, None, "Trade requires human approval."
+        # User requested fully autonomous execution - bypass human approval
+        # if candidate_trade.approval_required:
+        #     # Awaits human-in-the-loop approval
+        #     return candidate_trade, None, "Trade requires human approval."
 
         # 3. Risk Engine Validation
         # Construct risk signal from CandidateTrade

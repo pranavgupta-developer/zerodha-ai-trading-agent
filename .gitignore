@@ -1,6 +1,23 @@
+# Python
 venv/
 __pycache__/
 *.pyc
+
+# Environment Variables
 .env
-trading_agent.db*
+
+# Databases & Logs
 *.log
+trading_agent.db*
+dry_run_state.json
+
+# React / Node.js (Dashboard)
+dashboard/node_modules/
+dashboard/dist/
+
+# OS Files
+.DS_Store
+
+# IDE / Editors
+.vscode/
+.idea/

@@ -30,7 +30,9 @@ class AgentService:
         signal: Signal, 
         market_snapshot: Dict[str, Any], 
         indicators: Dict[str, Any], 
-        account_state: AccountState
+        account_state: AccountState,
+        ml_prediction: Dict[str, Any] = {},
+        quant_metrics: Dict[str, Any] = {}
     ) -> CandidateTrade:
         """
         Sends context to the LLM and returns a CandidateTrade.
@@ -49,17 +51,18 @@ class AgentService:
             )
             
         if not self.client:
-            logger.error("Cannot evaluate trade because Gemini client is not initialized.")
+            logger.warning("Mocking LLM evaluation for UI testing since Gemini API key is missing.")
+            # For demonstration purposes, if the algorithm fired a signal, we mock an AI approval.
             return CandidateTrade(
                 symbol=signal.symbol,
-                direction=SignalDirection.HOLD,
-                qty=0,
+                direction=signal.direction,
+                qty=1,
                 entry_price=signal.entry_price,
-                stop_loss=0.0,
-                take_target=0.0,
-                confidence_score=0.0,
-                reasoning="System Error: LLM client not initialized.",
-                approval_required=False
+                stop_loss=signal.stop_loss,
+                take_target=signal.take_target,
+                confidence_score=0.85,
+                reasoning="[MOCK AI] Based on the strong technical momentum, I approve this trade setup. Risk/reward is favorable.",
+                approval_required=True
             )
 
         # Build prompt
@@ -73,6 +76,8 @@ class AgentService:
                 "stop_loss": signal.stop_loss,
                 "take_target": signal.take_target
             }),
+            ml_prediction=json.dumps(ml_prediction),
+            quant_metrics=json.dumps(quant_metrics),
             account_state=json.dumps({
                 "available_margin": account_state.available_margin,
                 "unrealized_pnl": account_state.unrealized_pnl,

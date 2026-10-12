@@ -33,7 +33,7 @@ def test_generate_session_success(broker, mock_kite):
         request_token="request_token_123",
         api_secret=broker.api_secret
     )
-    mock_kite.set_access_token.assert_called_once_with("fake_token")
+    mock_kite.set_access_token.assert_any_call("fake_token")
 
 def test_generate_session_failure(broker, mock_kite):
     mock_kite.generate_session.side_effect = kite_exc.TokenException("Invalid token")

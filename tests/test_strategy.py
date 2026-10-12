@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from app.trading.strategy import EmaCrossoverRsiStrategy, StrategyConfig
+from app.trading.strategy import EmaRsiVwapStrategy, StrategyConfig
 from app.trading.signals import SignalDirection
 
 @dataclass
@@ -11,7 +11,7 @@ class MockCandle:
 
 def test_strategy_not_enough_data():
     config = StrategyConfig(fast_ema_period=3, slow_ema_period=6, rsi_period=4)
-    strategy = EmaCrossoverRsiStrategy(config)
+    strategy = EmaRsiVwapStrategy(config)
     
     # 6 is the max period, we need at least 7 candles
     candles = [MockCandle(close=100.0, high=105.0, low=95.0, volume=100) for _ in range(5)]
@@ -22,7 +22,7 @@ def test_strategy_not_enough_data():
 
 def test_strategy_bullish_crossover():
     config = StrategyConfig(fast_ema_period=3, slow_ema_period=6, rsi_period=4, rsi_overbought=80.0)
-    strategy = EmaCrossoverRsiStrategy(config)
+    strategy = EmaRsiVwapStrategy(config)
     
     # We want to engineer a bullish crossover.
     # Fast crosses above slow.
@@ -46,7 +46,7 @@ def test_strategy_bullish_crossover():
 
 def test_strategy_bearish_crossover():
     config = StrategyConfig(fast_ema_period=3, slow_ema_period=6, rsi_period=4, rsi_oversold=20.0)
-    strategy = EmaCrossoverRsiStrategy(config)
+    strategy = EmaRsiVwapStrategy(config)
     
     candles = [MockCandle(close=100.0, high=105.0, low=95.0, volume=100) for _ in range(15)]
     
