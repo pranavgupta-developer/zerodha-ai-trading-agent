@@ -265,3 +265,27 @@ body {
     max-width: 400px;
     line-height: 1.4;
 }
+
+/* Real-time Dynamic Update Animations */
+@keyframes flash-green {
+    0% { background-color: rgba(16, 185, 129, 0.35); }
+    100% { background-color: transparent; }
+}
+
+@keyframes flash-red {
+    0% { background-color: rgba(239, 68, 68, 0.35); }
+    100% { background-color: transparent; }
+}
+
+.flash-up {
+    animation: flash-green 0.8s ease-out;
+}
+
+.flash-down {
+    animation: flash-red 0.8s ease-out;
+}
+
+.new-row-highlight {
+    animation: flash-green 1.5s ease-out;
+}
+

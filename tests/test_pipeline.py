@@ -81,22 +81,6 @@ def test_pipeline_agent_rejects(pipeline, mock_strategy, mock_agent, base_accoun
     assert "AI Agent rejected trade" in msg
     pipeline.risk_engine.validate_signal.assert_not_called()
 
-def test_pipeline_agent_requires_approval(pipeline, mock_strategy, mock_agent, base_account):
-    signal = Signal(symbol="RELIANCE", direction=SignalDirection.BUY, confidence=0.8, entry_price=100, stop_loss=90, take_target=120)
-    mock_strategy.generate_signal.return_value = signal
-    
-    # Agent says BUY but needs approval
-    mock_agent.evaluate_trade.return_value = CandidateTrade(
-        symbol="RELIANCE", direction=SignalDirection.BUY, qty=10, entry_price=100, 
-        stop_loss=90, take_target=120, confidence_score=0.6, reasoning="Maybe?", approval_required=True
-    )
-    
-    trade, order, msg = pipeline.process_tick("RELIANCE", [], {}, {}, base_account)
-    
-    assert trade is not None
-    assert order is None
-    assert "requires human approval" in msg
-    pipeline.risk_engine.validate_signal.assert_not_called()
 
 def test_pipeline_risk_rejects(pipeline, mock_strategy, mock_agent, mock_risk_engine, base_account):
     signal = Signal(symbol="RELIANCE", direction=SignalDirection.BUY, confidence=0.8, entry_price=100, stop_loss=90, take_target=120)

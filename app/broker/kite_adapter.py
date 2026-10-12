@@ -49,7 +49,7 @@ class BrokerAdapter:
             if os.path.exists(".kite_session"):
                 with open(".kite_session", "r") as f:
                     token = f.read().strip()
-                    if token:
+                    if token and token != "fake_token":
                         self.set_access_token(token)
         except Exception:
             pass
@@ -138,7 +138,12 @@ class BrokerAdapter:
         Fetch funds and margins for the account.
         """
         if settings.TRADING_MODE == "DRY_RUN":
-            return {"equity": {"available": {"live_balance": 500000.0}}}
+            if self._access_token:
+                try:
+                    return self.kite.margins() # type: ignore
+                except Exception:
+                    pass
+            return {"equity": {"available": {"live_balance": 500000.0}, "net": 500000.0}}
             
         self._ensure_authenticated()
         try:
@@ -172,7 +177,14 @@ class BrokerAdapter:
         """
         if settings.TRADING_MODE == "DRY_RUN":
             state = self._load_dry_run_state()
-            return state.get("positions", {"net": [], "day": []})
+            raw_pos = state.get("positions", {"net": [], "day": []})
+            cleaned_net = []
+            for p in raw_pos.get("net", []):
+                item = dict(p)
+                item["tradingsymbol"] = str(item.get("tradingsymbol", "")).replace(".NS", "").strip()
+                item["quantity"] = abs(int(item.get("quantity", 0)))
+                cleaned_net.append(item)
+            return {"net": cleaned_net, "day": raw_pos.get("day", [])}
             
         self._ensure_authenticated()
         try:
@@ -227,6 +239,9 @@ class BrokerAdapter:
         Places an order on Kite Connect. Returns the broker_order_id.
         In DRY_RUN mode, generates a mock ID.
         """
+        clean_symbol = symbol.replace(".NS", "").strip()
+        quantity = abs(int(quantity))
+
         if price <= 0.0:
             order_type = "MARKET"
         else:
@@ -236,33 +251,41 @@ class BrokerAdapter:
         if settings.TRADING_MODE == "DRY_RUN":
             import uuid
             mock_id = f"mock_{uuid.uuid4().hex[:12]}"
-            logger.info(f"[DRY_RUN] Placed mock {transaction_type} order for {quantity} {symbol} @ {price}. ID: {mock_id}")
+            logger.info(f"[DRY_RUN] Placed mock {transaction_type} order for {quantity} {clean_symbol} @ {price}. ID: {mock_id}")
             
             # Persist order and position in DRY_RUN
             state = self._load_dry_run_state()
             state["orders"].append({
                 "order_id": mock_id,
                 "status": "COMPLETE",
-                "tradingsymbol": symbol,
+                "tradingsymbol": clean_symbol,
                 "transaction_type": transaction_type,
                 "quantity": quantity,
                 "price": price,
                 "filled_quantity": quantity
             })
             
-            # Update positions
+            # Update positions (ensuring non-negative quantities and deduplication)
             found = False
-            qty_multiplier = 1 if transaction_type == "BUY" else -1
             for pos in state["positions"]["net"]:
-                if pos["tradingsymbol"] == symbol:
-                    pos["quantity"] += quantity * qty_multiplier
-                    pos["average_price"] = price # Simplified avg
+                if pos["tradingsymbol"] == clean_symbol:
                     found = True
+                    curr_qty = abs(int(pos.get("quantity", 0)))
+                    curr_avg = float(pos.get("average_price", price))
+                    if transaction_type == "BUY":
+                        new_qty = curr_qty + quantity
+                        if new_qty > 0 and price > 0:
+                            pos["average_price"] = round((curr_qty * curr_avg + quantity * price) / new_qty, 2)
+                        pos["quantity"] = new_qty
+                    else:
+                        # SELL decreases holding down to 0, never negative
+                        pos["quantity"] = max(0, curr_qty - quantity)
                     break
             if not found:
+                initial_qty = quantity if transaction_type == "BUY" else 0
                 state["positions"]["net"].append({
-                    "tradingsymbol": symbol,
-                    "quantity": quantity * qty_multiplier,
+                    "tradingsymbol": clean_symbol,
+                    "quantity": initial_qty,
                     "average_price": price
                 })
                 
@@ -316,27 +339,13 @@ class BrokerAdapter:
         Returns a dict mapping instrument token/symbol to its quote data (OHLC, depth, volume, circuit limits).
         """
         if settings.TRADING_MODE == "DRY_RUN":
-            # Still try to hit the live API if token exists, fallback to mock if unauthenticated
-            try:
-                self._ensure_authenticated()
-                return self.kite.quote(symbols) # type: ignore
-            except ValueError:
-                # Return a basic mock quote for DRY_RUN if no token is available
-                logger.warning("No access token found. Returning mock quotes for DRY_RUN.")
-                return {
-                    s: {
-                        "instrument_token": 0,
-                        "timestamp": "2023-01-01 12:00:00",
-                        "last_price": 3000.0,
-                        "volume": 1000000,
-                        "lower_circuit_limit": 2700.0,
-                        "upper_circuit_limit": 3300.0,
-                        "depth": {
-                            "buy": [{"price": 2999.0, "quantity": 100}],
-                            "sell": [{"price": 3001.0, "quantity": 100}]
-                        }
-                    } for s in symbols
-                }
+            if self._access_token:
+                try:
+                    return self.kite.quote(symbols) # type: ignore
+                except Exception:
+                    pass
+            # Return empty dict so system uses real market data candles from yfinance
+            return {}
                 
         self._ensure_authenticated()
         try:

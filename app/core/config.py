@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Watchlist for automated trading (comma-separated Yahoo Finance symbols)
     TRADING_SYMBOLS: str = "RELIANCE.NS,TCS.NS,INFY.NS,HDFCBANK.NS,ICICIBANK.NS"
 
+    # Execution autonomy (True: auto-execute; False: require human approval on dashboard)
+    AUTONOMOUS_EXECUTION: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings() # type: ignore

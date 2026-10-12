@@ -1,3 +1,4 @@
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 from app.broker.kite_adapter import BrokerAdapter
@@ -34,6 +35,8 @@ def test_generate_session_success(broker, mock_kite):
         api_secret=broker.api_secret
     )
     mock_kite.set_access_token.assert_any_call("fake_token")
+    if os.path.exists(".kite_session"):
+        os.remove(".kite_session")
 
 def test_generate_session_failure(broker, mock_kite):
     mock_kite.generate_session.side_effect = kite_exc.TokenException("Invalid token")

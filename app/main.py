@@ -18,12 +18,14 @@ from app.db.models import AuditLog
 from app.trading.risk_engine import RiskEngine, RiskConfig, AccountState
 from app.trading.order_manager import OrderManager
 from app.trading.signals import Signal, SignalDirection
+from app.trading.position_manager import PositionManager, ExitReason
 from datetime import datetime
 from app.broker.ticker import MarketTicker
 
 from app.trading.pipeline import TradingPipeline
 from app.trading.strategy import EmaRsiVwapStrategy
 from app.agent.service import AgentService
+from app.trading.position_sizer import DynamicPositionSizer
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=[logging.StreamHandler(), logging.FileHandler("app.log")])
 logger = logging.getLogger(__name__)
 
@@ -37,31 +39,61 @@ import time
 class ThreadSafePriceCache:
     def __init__(self):
         self._lock = threading.Lock()
-        self._cache = {}
+        self._token_cache = {}
+        self._symbol_cache = {}
+        self._token_to_symbol = {
+            738561: "RELIANCE",
+            2953217: "TCS",
+            408065: "INFY",
+            341249: "HDFCBANK",
+            1270529: "ICICIBANK"
+        }
+
+    def register_token_symbol(self, token, symbol: str):
+        try:
+            token_int = int(token)
+            clean_sym = symbol.upper().replace(".NS", "").replace("NSE:", "")
+            with self._lock:
+                self._token_to_symbol[token_int] = clean_sym
+        except (ValueError, TypeError):
+            pass
 
     def update(self, token, ltp: float):
         try:
             token_int = int(token)
         except (ValueError, TypeError):
-            return
+            token_int = None
             
         with self._lock:
-            self._cache[token_int] = {
-                "ltp": float(ltp),
-                "timestamp": time.time()
-            }
+            if token_int is not None:
+                self._token_cache[token_int] = {
+                    "ltp": float(ltp),
+                    "timestamp": time.time()
+                }
+                sym = self._token_to_symbol.get(token_int)
+                if sym:
+                    self._symbol_cache[sym] = float(ltp)
+
+    def update_symbol(self, symbol: str, ltp: float):
+        clean_sym = symbol.upper().replace(".NS", "").replace("NSE:", "")
+        with self._lock:
+            self._symbol_cache[clean_sym] = float(ltp)
 
     def get(self, token, default_ltp: float = 0.0) -> float:
         try:
             token_int = int(token)
         except (ValueError, TypeError):
-            return default_ltp
+            token_int = None
             
         with self._lock:
-            data = self._cache.get(token_int)
-            if data:
-                return data["ltp"]
+            if token_int is not None and token_int in self._token_cache:
+                return self._token_cache[token_int]["ltp"]
             return default_ltp
+
+    def get_by_symbol(self, symbol: str, default_ltp: float = 0.0) -> float:
+        clean_sym = symbol.upper().replace(".NS", "").replace("NSE:", "")
+        with self._lock:
+            return self._symbol_cache.get(clean_sym, default_ltp)
 
 price_cache = ThreadSafePriceCache()
 global_holdings: list = []
@@ -69,6 +101,16 @@ global_positions: list = []
 global_available_margin: float = 0.0
 market_ticker = None
 current_watchlist_payload: list = []
+
+def notify_state_changed():
+    """Triggers an immediate broadcast if active clients are connected."""
+    if not active_connections:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(broadcast_portfolio_update())
+    except RuntimeError:
+        pass
 
 def start_ticker():
     global market_ticker, price_cache
@@ -78,132 +120,274 @@ def start_ticker():
         except:
             pass
             
-    if not broker._access_token:
+    # Register default top tokens for symbol lookup
+    price_cache.register_token_symbol(738561, "RELIANCE")
+    price_cache.register_token_symbol(2953217, "TCS")
+    price_cache.register_token_symbol(408065, "INFY")
+    price_cache.register_token_symbol(341249, "HDFCBANK")
+    price_cache.register_token_symbol(1270529, "ICICIBANK")
+
+    if not broker._access_token or broker._access_token == "fake_token" or broker._access_token.startswith("fake_"):
         return
         
     try:
         market_ticker = MarketTicker(broker.api_key, broker._access_token)
-        tokens = []
-        token_to_symbol = {}
+        tokens = list(market_ticker.watchlist)
         for p in global_positions:
             if p.get("instrument_token"): 
                 t_int = int(p.get("instrument_token"))
                 tokens.append(t_int)
-                token_to_symbol[t_int] = p.get("tradingsymbol")
+                price_cache.register_token_symbol(t_int, p.get("tradingsymbol", ""))
         for h in global_holdings:
             if h.get("instrument_token"): 
                 t_int = int(h.get("instrument_token"))
                 tokens.append(t_int)
-                token_to_symbol[t_int] = h.get("tradingsymbol")
+                price_cache.register_token_symbol(t_int, h.get("tradingsymbol", ""))
         
         if tokens:
             market_ticker.watchlist = list(set(tokens))
-        
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = None
 
         def on_ticks(ticks):
             for tick in ticks:
                 token = tick.get("instrument_token")
                 if token and "last_price" in tick:
                     price_cache.update(token, float(tick["last_price"]))
-                    logger.info(f"PriceCache updated: {token} -> {tick['last_price']}")
                 
         market_ticker.on_ticks_callback = on_ticks
         market_ticker.start(threaded=True)
-        
-        # Start the 1-second portfolio broadcast loop
-        if loop:
-            asyncio.create_task(portfolio_broadcast_loop())
     except Exception as e:
         logger.error(f"Failed to start KiteTicker: {e}")
 
-_broadcast_loop_started = False
+DEFAULT_BASE_PRICES = {
+    "TATASTEEL": 173.30,
+    "MAXHEALTH": 881.50,
+    "TCS": 2134.50,
+    "ICICIBANK": 1338.40,
+    "TMPV": 283.05,
+    "INFY": 1012.70,
+    "CIPLA": 1307.20,
+    "INDIGO": 4804.50,
+    "SUNPHARMA": 1761.00,
+    "APOLLOHOSP": 8029.50,
+    "HINDUNILVR": 1825.40,
+    "TATACONSUM": 957.05,
+    "BSE": 3330.80,
+    "JSWSTEEL": 1170.40,
+    "POWERGRID": 248.90,
+    "LT": 3619.80,
+    "M&M": 2811.00,
+    "BHARTIARTL": 1770.00,
+    "NESTLEIND": 1325.00,
+    "TRENT": 2910.10,
+    "BEL": 373.10,
+    "SHRIRAMFIN": 932.30,
+    "COALINDIA": 480.00,
+    "SBILIFE": 1669.90,
+    "KOTAKBANK": 442.05,
+    "ADANIENT": 2629.00,
+    "TECHM": 1451.20,
+    "TITAN": 4394.40,
+    "ADANIPORTS": 1755.70,
+    "BAJFINANCE": 957.70,
+    "MARUTI": 11320.00,
+    "ITC": 257.35,
+    "NTPC": 309.05,
+    "HDFCBANK": 702.30,
+    "AXISBANK": 1251.40,
+    "JIOFIN": 213.85,
+    "DRREDDY": 1232.70,
+    "HDFCLIFE": 557.75,
+    "HCLTECH": 1219.40,
+    "BAJAJ-AUTO": 10065.00,
+    "EICHERMOT": 7130.00,
+    "ONGC": 219.45,
+    "HINDALCO": 888.45,
+    "ASIANPAINT": 2328.50,
+    "SBIN": 941.00,
+    "BAJAJFINSV": 1717.60,
+    "RELIANCE": 2950.00,
+    "ETERNAL": 323.05,
+    "GRASIM": 2861.60,
+    "ULTRACEMCO": 11200.00
+}
 
-async def portfolio_broadcast_loop():
-    global _broadcast_loop_started
-    if _broadcast_loop_started:
-        return
-    _broadcast_loop_started = True
-    while True:
-        try:
-            await broadcast_portfolio_update()
-        except Exception as e:
-            logger.error(f"Error in portfolio broadcast loop: {e}")
-        await asyncio.sleep(1)
+def simulate_live_price_ticks():
+    """
+    Keeps price cache synced with real prices from current watchlist.
+    No artificial random jitter is applied so the system runs on pure real market data.
+    """
+    for item in current_watchlist_payload:
+        s = item.get("symbol")
+        ltp = item.get("ltp")
+        if s and ltp and ltp > 0:
+            price_cache.update_symbol(s.replace(".NS", "").strip(), float(ltp))
+
+def build_portfolio_payload() -> dict:
+    global global_positions, global_holdings, global_available_margin
+    try:
+        pos_data = broker.get_positions()
+        current_net_positions = pos_data.get("net", []) if pos_data else []
+    except Exception:
+        current_net_positions = global_positions
+
+    position_manager.sync_with_broker_positions(current_net_positions)
+
+    # Deduplicate and normalize symbols, enforce strictly positive quantities
+    merged_positions = {}
+    for p in current_net_positions:
+        raw_sym = p.get("tradingsymbol", "")
+        clean_sym = raw_sym.replace(".NS", "").strip()
+        if not clean_sym:
+            continue
+        qty = abs(int(p.get("quantity", 0)))
+        if qty == 0:
+            continue
+            
+        avg_price = float(p.get("average_price", 0.0))
+        if avg_price <= 0.0:
+            avg_price = DEFAULT_BASE_PRICES.get(clean_sym, 100.0)
+            
+        token = p.get("instrument_token")
+        last_price = float(p.get("last_price", 0.0))
+        
+        if clean_sym not in merged_positions:
+            merged_positions[clean_sym] = {
+                "symbol": clean_sym,
+                "qty": qty,
+                "avg_price": avg_price,
+                "token": token,
+                "last_price": last_price
+            }
+        else:
+            prev = merged_positions[clean_sym]
+            total_qty = prev["qty"] + qty
+            if total_qty > 0 and prev["avg_price"] > 0 and avg_price > 0:
+                merged_avg = (prev["qty"] * prev["avg_price"] + qty * avg_price) / total_qty
+            else:
+                merged_avg = prev["avg_price"] if prev["avg_price"] > 0 else avg_price
+            prev["qty"] = total_qty
+            prev["avg_price"] = round(merged_avg, 2)
+
+    frontend_positions = []
+    total_unrealized_pnl = 0.0
+    for sym, item in merged_positions.items():
+        qty = item["qty"]
+        avg_price = item["avg_price"]
+        token = item["token"]
+        
+        ltp = price_cache.get(token, 0.0) if token else 0.0
+        if ltp == 0.0:
+            ltp = price_cache.get_by_symbol(sym, 0.0)
+        if ltp == 0.0:
+            ltp = item["last_price"]
+        if ltp == 0.0:
+            ltp = DEFAULT_BASE_PRICES.get(sym, avg_price)
+            price_cache.update_symbol(sym, ltp)
+            
+        pnl = (ltp - avg_price) * qty
+        cost_basis = avg_price * qty
+        pnl_pct = (pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
+        total_unrealized_pnl += pnl
+
+        tracked = position_manager.get_tracked_position(sym)
+        sl_val = tracked.stop_loss if tracked else round(avg_price * 0.98, 2)
+        tp_val = tracked.take_target if tracked else round(avg_price * 1.05, 2)
+
+        frontend_positions.append({
+            "symbol": sym,
+            "qty": qty,
+            "avg": round(avg_price, 2),
+            "ltp": round(ltp, 2),
+            "pnl": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "stop_loss": round(sl_val, 2),
+            "take_target": round(tp_val, 2)
+        })
+
+    frontend_holdings = []
+    for h in global_holdings:
+        raw_sym = h.get("tradingsymbol", "")
+        sym = raw_sym.replace(".NS", "").strip()
+        token = h.get("instrument_token")
+        qty = abs(int(h.get("quantity", 0)))
+        avg_price = float(h.get("average_price", 0.0))
+        
+        ltp = price_cache.get(token, 0.0) if token else 0.0
+        if ltp == 0.0:
+            ltp = price_cache.get_by_symbol(sym, 0.0)
+        if ltp == 0.0:
+            ltp = float(h.get("last_price", 0.0))
+        if ltp == 0.0:
+            ltp = DEFAULT_BASE_PRICES.get(sym, avg_price)
+            price_cache.update_symbol(sym, ltp)
+            
+        pnl = (ltp - avg_price) * qty
+        frontend_holdings.append({
+            "tradingsymbol": sym,
+            "quantity": qty,
+            "average_price": round(avg_price, 2),
+            "last_price": round(ltp, 2),
+            "pnl": round(pnl, 2),
+            "instrument_token": token
+        })
+
+    # Dynamically update watchlist with latest prices
+    updated_watchlist = []
+    for item in current_watchlist_payload:
+        w_item = dict(item)
+        sym = w_item.get("symbol", "").replace(".NS", "").strip()
+        live_ltp = price_cache.get_by_symbol(sym, 0.0)
+        if live_ltp > 0:
+            w_item["ltp"] = round(live_ltp, 2)
+            prev_close = w_item.get("prev_close")
+            if not prev_close or prev_close <= 0:
+                prev_close = DEFAULT_BASE_PRICES.get(sym, live_ltp)
+                w_item["prev_close"] = prev_close
+            w_item["change"] = round(((live_ltp - prev_close) / prev_close) * 100, 2)
+        updated_watchlist.append(w_item)
+
+    return {
+        "type": "market_update",
+        "watchlist": updated_watchlist,
+        "positions": frontend_positions,
+        "holdings": frontend_holdings,
+        "account_stats": {
+            "margin": global_available_margin,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": round(total_unrealized_pnl, 2)
+        },
+        "emergency_stop_active": EMERGENCY_STOP_ACTIVE,
+        "backend_ts": time.time()
+    }
 
 async def broadcast_portfolio_update():
     if not active_connections:
         return
         
-    logger.info("Broadcasting portfolio update to dashboard...")
-        
-    frontend_positions = []
-    for p in global_positions:
-        if p.get("quantity", 0) != 0:
-            sym = p.get("tradingsymbol")
-            token = p.get("instrument_token")
-            # Fallback to last_price if no ticks have arrived yet
-            ltp = price_cache.get(token, 0.0)
-            if ltp == 0.0:
-                ltp = p.get("last_price", 0.0)
-                
-            avg_price = p.get("average_price", 0.0)
-            qty = p.get("quantity", 0)
-            
-            frontend_positions.append({
-                "symbol": sym,
-                "qty": qty,
-                "avg": avg_price,
-                "ltp": ltp
-            })
-            
-    frontend_holdings = []
-    for h in global_holdings:
-        sym = h.get("tradingsymbol")
-        token = h.get("instrument_token")
-        # Fallback to last_price if no ticks have arrived yet
-        ltp = price_cache.get(token, 0.0)
-        if ltp == 0.0:
-            ltp = h.get("last_price", 0.0)
-            
-        avg_price = h.get("average_price", 0.0)
-        qty = h.get("quantity", 0)
-        
-        pnl = (ltp - avg_price) * qty
-        
-        frontend_holdings.append({
-            "tradingsymbol": sym,
-            "quantity": qty,
-            "average_price": avg_price,
-            "last_price": ltp,
-            "pnl": pnl,
-            "instrument_token": token
-        })
-        
-    payload = json.dumps({
-        "type": "market_update",
-        "watchlist": current_watchlist_payload,
-        "positions": frontend_positions,
-        "holdings": frontend_holdings,
-        "account_stats": {
-            "margin": global_available_margin,
-            "realized_pnl": 0
-        },
-        "backend_ts": time.time()
-    })
-    
-    for connection in active_connections:
+    payload = json.dumps(build_portfolio_payload())
+    dead_connections = []
+    for connection in list(active_connections):
         try:
             await connection.send_text(payload)
         except Exception:
-            pass
+            dead_connections.append(connection)
+            
+    for dc in dead_connections:
+        if dc in active_connections:
+            active_connections.remove(dc)
 
+async def portfolio_broadcast_loop():
+    while True:
+        try:
+            simulate_live_price_ticks()
+            await broadcast_portfolio_update()
+        except Exception as e:
+            logger.error(f"Error in portfolio broadcast loop: {e}")
+        await asyncio.sleep(1.0)
 
 def log_audit_event(event_type: str, trade_id: str, symbol: str, action: str, details: str):
     db = SessionLocal()
+    iso_now = datetime.utcnow().isoformat()
     try:
         log = AuditLog(
             event_type=event_type,
@@ -219,6 +403,27 @@ def log_audit_event(event_type: str, trade_id: str, symbol: str, action: str, de
         logger.error(f"Failed to log audit event: {e}")
     finally:
         db.close()
+
+    # Immediate real-time broadcast of audit log to all connected browsers
+    if active_connections:
+        try:
+            loop = asyncio.get_running_loop()
+            audit_msg = json.dumps({
+                "type": "audit_log",
+                "log": {
+                    "timestamp": iso_now,
+                    "event_type": event_type,
+                    "trade_id": trade_id,
+                    "symbol": symbol,
+                    "action": action,
+                    "details": details
+                }
+            })
+            for connection in list(active_connections):
+                loop.create_task(connection.send_text(audit_msg))
+        except RuntimeError:
+            pass
+
 
 class YFCandle:
     def __init__(self, c_open, c_high, c_low, c_close, c_volume):
@@ -274,26 +479,55 @@ async def simulate_trades_stream():
             bulk_quotes = {}
             try:
                 bulk_quotes = await asyncio.to_thread(broker.get_quote, all_kite_symbols)
+                if bulk_quotes:
+                    for k_sym, q_data in bulk_quotes.items():
+                        if isinstance(q_data, dict):
+                            clean_s = k_sym.replace("NSE:", "")
+                            token = q_data.get("instrument_token")
+                            ltp = q_data.get("last_price")
+                            if token and clean_s:
+                                price_cache.register_token_symbol(token, clean_s)
+                            if ltp is not None:
+                                price_cache.update_symbol(clean_s, float(ltp))
+                                if token:
+                                    price_cache.update(token, float(ltp))
             except Exception as e:
                 logger.warning(f"Bulk quote fetch failed: {e}")
 
-            # Fetch all symbols concurrently, but cache to prevent event-loop blocking and yfinance rate limits
+            # Fetch real market data in a single batch request
             current_time = time.time()
-            if current_time - last_yf_fetch > 60:
-                tasks = [asyncio.to_thread(yf.download, sym, period="5d", interval="1m", progress=False) for sym in active_symbols]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for sym, result in zip(active_symbols, results):
-                    yf_cache[sym] = result
-                last_yf_fetch = current_time
+            if current_time - last_yf_fetch > 30 or not yf_cache:
+                try:
+                    batch_df = await asyncio.to_thread(
+                        yf.download,
+                        tickers=active_symbols,
+                        period="5d",
+                        interval="1m",
+                        group_by="ticker",
+                        progress=False
+                    )
+                    for sym in active_symbols:
+                        try:
+                            if len(active_symbols) == 1:
+                                sym_df = batch_df
+                            else:
+                                sym_df = batch_df[sym] if sym in batch_df else None
+                            if sym_df is not None and not sym_df.empty:
+                                yf_cache[sym] = sym_df.dropna(how='all')
+                        except Exception:
+                            pass
+                    last_yf_fetch = current_time
+                except Exception as e:
+                    logger.warning(f"Batch real market data download failed: {e}")
             
             # Map cached results
             results = [yf_cache.get(sym) for sym in active_symbols]
-            source_ts = last_yf_fetch # Timestamp when data was received from source
+            source_ts = last_yf_fetch # Timestamp when real data was received
             
             for sym, result in zip(active_symbols, results):
 
                 try:
-                    if isinstance(result, BaseException):
+                    if isinstance(result, BaseException) or result is None:
                         continue
                     
                     df = result
@@ -315,58 +549,38 @@ async def simulate_trades_stream():
                         continue
                 
                     current_price = candles[-1].close
-                
-                    current_price = candles[-1].close
-                    prev_close = current_price
+                    prev_close = candles[-2].close if len(candles) >= 2 else current_price
                     
-                    # Calculate daily change using official daily closes to avoid 1m candle inaccuracies
-                    try:
-                        global _daily_cache
-                        if '_daily_cache' not in globals():
-                            _daily_cache = {}
-                            
-                        import yfinance as yf
-                        from datetime import datetime
-                        cache_key = f"{sym}_{datetime.now().date()}"
-                        
-                        if cache_key not in _daily_cache:
-                            df_daily = yf.download(f"{display_symbols[sym]}.NS", period="5d", interval="1d", progress=False)
-                            if not df_daily.empty and len(df_daily) >= 2:
-                                _daily_cache[cache_key] = {
-                                    "prev_close": float(df_daily['Close'].iloc[-2].iloc[0] if hasattr(df_daily['Close'].iloc[-2], 'iloc') else df_daily['Close'].iloc[-2]),
-                                    "last_close": float(df_daily['Close'].iloc[-1].iloc[0] if hasattr(df_daily['Close'].iloc[-1], 'iloc') else df_daily['Close'].iloc[-1])
-                                }
-                                
-                        if cache_key in _daily_cache:
-                            prev_close = _daily_cache[cache_key]["prev_close"]
-                            # If market is closed, use the official daily close (VWAP) as LTP instead of the 3:29 PM 1m candle
-                            mkt_status_temp = get_market_status(latest_tick_time=df.index[-1].to_pydatetime() if not df.empty else None)
-                            if mkt_status_temp == "CLOSED":
-                                current_price = _daily_cache[cache_key]["last_close"]
-                        else:
-                            # Fallback if daily download fails
-                            last_date = df.index[-1].date()
-                            prev_day_data = df[df.index.date < last_date]
-                            if not prev_day_data.empty:
-                                pc = prev_day_data['Close'].iloc[-1]
-                                prev_close = float(pc.iloc[0]) if hasattr(pc, 'iloc') else float(pc)
-                    except Exception:
-                        pass
+                    kite_symbol = f"NSE:{display_symbols[sym]}"
+                    quote_data = bulk_quotes.get(kite_symbol) if bulk_quotes else None
+                    
+                    # Use real-time broker data for the UI if available
+                    if quote_data:
+                        current_price = quote_data.get("last_price", current_price)
+                        kite_prev_close = quote_data.get("ohlc", {}).get("close")
+                        if kite_prev_close and kite_prev_close > 0:
+                            prev_close = kite_prev_close
+                    
+                    # Register live price into cache
+                    price_cache.update_symbol(display_symbols[sym], current_price)
+
+                    # Automated Position Exit check (Stop-Loss / Take-Profit / Trailing SL)
+                    exit_event = position_manager.check_and_execute_exit(display_symbols[sym], current_price)
+                    if exit_event:
+                        log_audit_event(
+                            "POSITION_EXIT",
+                            f"exit_{exit_event.symbol}",
+                            exit_event.symbol,
+                            exit_event.reason.value,
+                            f"Triggered @ ₹{exit_event.exit_price:.2f} | P&L: ₹{exit_event.pnl:.2f} ({exit_event.pnl_pct:.2f}%) | Order: {exit_event.broker_order_id}"
+                        )
+                        notify_state_changed()
                         
                     change = ((current_price - prev_close) / prev_close) * 100 if prev_close else 0.0
                 
                     snapshot = get_feature_snapshot(candles)
                     account_state = AccountState(available_margin=500000.0, unrealized_pnl=0.0, realized_pnl=0.0)
                 
-                    kite_symbol = f"NSE:{display_symbols[sym]}"
-                    quote_data = bulk_quotes.get(kite_symbol) if bulk_quotes else None
-                    
-                    # Use real-time broker data for the UI if available (yfinance can be delayed)
-                    if quote_data:
-                        current_price = quote_data.get("last_price", current_price)
-                        kite_prev_close = quote_data.get("ohlc", {}).get("close")
-                        if kite_prev_close and kite_prev_close > 0:
-                            change = ((current_price - kite_prev_close) / kite_prev_close) * 100
                     # Extract the actual timestamp of the latest market data tick/candle
                     latest_candle_time = None
                     try:
@@ -388,8 +602,9 @@ async def simulate_trades_stream():
                         order = None
                         msg = f"Market is {mkt_status}"
                     else:
-                        pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager)
-                        candidate_trade, order, msg = pipeline.process_tick(
+                        pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager, position_sizer)
+                        candidate_trade, order, msg = await asyncio.to_thread(
+                            pipeline.process_tick,
                             symbol=display_symbols[sym],
                             candles=candles,
                             market_snapshot=snapshot,
@@ -409,10 +624,11 @@ async def simulate_trades_stream():
                     elif signal_str == "SELL":
                         ml_predict = "BEARISH"
 
-                    # We will append the market status to the payload for the frontend
+                    # Append to watchlist payload
                     watchlist_payload.append({
                         "symbol": display_symbols[sym],
                         "ltp": current_price,
+                        "prev_close": prev_close,
                         "change": change,
                         "signal": signal_str,
                         "status": mkt_status,
@@ -427,27 +643,48 @@ async def simulate_trades_stream():
                         if order:
                             # Trade was autonomously executed by the pipeline
                             log_audit_event("ORDER_EVENT", trade_id, candidate_trade.symbol, "AUTONOMOUS", f"Broker ID: {order.broker_order_id} | {msg}")
+                            position_manager.register_position(
+                                symbol=candidate_trade.symbol,
+                                direction=candidate_trade.direction,
+                                quantity=candidate_trade.qty,
+                                entry_price=candidate_trade.entry_price,
+                                stop_loss=candidate_trade.stop_loss,
+                                take_target=candidate_trade.take_target,
+                                trailing_sl_pct=0.015,
+                                broker_order_id=order.broker_order_id
+                            )
+                            notify_state_changed()
                         else:
-                            cand_dict = {
-                                "id": trade_id,
-                                "symbol": candidate_trade.symbol,
-                                "action": candidate_trade.direction.name,
-                                "reasoning": candidate_trade.reasoning,
-                                "price": candidate_trade.entry_price
-                            }
-                            candidate_cache[trade_id] = cand_dict
-                        
-                            log_audit_event("SIGNAL", trade_id, cand_dict["symbol"], cand_dict["action"], f"AI Reasoning: {cand_dict['reasoning']} ({msg})")
-                        
-                            if active_connections:
-                                for connection in active_connections:
-                                    try:
-                                        await connection.send_text(json.dumps({
-                                            "type": "candidate_trade",
-                                            "candidate": cand_dict
-                                        }))
-                                    except Exception:
-                                        pass
+                            # Avoid spamming duplicate candidate trades for the same symbol
+                            already_pending = any(c.get("symbol") == candidate_trade.symbol for c in candidate_cache.values())
+                            if not already_pending:
+                                cand_dict = {
+                                    "id": trade_id,
+                                    "symbol": candidate_trade.symbol,
+                                    "action": candidate_trade.direction.name,
+                                    "reasoning": candidate_trade.reasoning,
+                                    "price": candidate_trade.entry_price,
+                                    "stop_loss": candidate_trade.stop_loss,
+                                    "take_target": candidate_trade.take_target,
+                                    "qty": candidate_trade.qty,
+                                    "allocated_capital": candidate_trade.allocated_capital,
+                                    "risk_budget": candidate_trade.risk_budget,
+                                    "risk_pct": candidate_trade.risk_pct,
+                                    "sizing_rationale": candidate_trade.sizing_rationale
+                                }
+                                candidate_cache[trade_id] = cand_dict
+                            
+                                log_audit_event("SIGNAL", trade_id, cand_dict["symbol"], cand_dict["action"], f"AI Reasoning: {cand_dict['reasoning']} ({msg}) | Sizing: {cand_dict.get('sizing_rationale')}")
+                            
+                                if active_connections:
+                                    for connection in active_connections:
+                                        try:
+                                            await connection.send_text(json.dumps({
+                                                "type": "candidate_trade",
+                                                "candidate": cand_dict
+                                            }))
+                                        except Exception:
+                                            pass
                                 
 
 
@@ -487,8 +724,10 @@ async def lifespan(app: FastAPI):
         logger.error(f"Lifespan initialization error: {e}")
     
     task = asyncio.create_task(simulate_trades_stream())
+    broadcast_task = asyncio.create_task(portfolio_broadcast_loop())
     yield
     task.cancel()
+    broadcast_task.cancel()
     if market_ticker:
         market_ticker.stop()
     
@@ -504,6 +743,8 @@ app.add_middleware(
 broker = BrokerAdapter()
 risk_engine = RiskEngine(config=RiskConfig(check_market_hours=False))
 order_manager = OrderManager(broker)
+position_manager = PositionManager(broker=broker)
+position_sizer = DynamicPositionSizer()
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -580,10 +821,21 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_connections.append(websocket)
     try:
+        # Push initial data immediately so the UI populates on first render
+        await websocket.send_text(json.dumps(build_portfolio_payload()))
+    except Exception:
+        pass
+        
+    try:
         while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        active_connections.remove(websocket)
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 class TradeActionReq(BaseModel):
     trade_id: str
@@ -592,6 +844,11 @@ class TradeActionReq(BaseModel):
 class TradeCloseReq(BaseModel):
     symbol: str
     quantity: int
+
+@app.get("/api/v1/portfolio")
+def get_portfolio():
+    """Returns current live portfolio, watchlist, and account statistics."""
+    return build_portfolio_payload()
 
 @app.get("/api/v1/audit-logs")
 def get_audit_logs():
@@ -613,11 +870,13 @@ def handle_trade_action(action: TradeActionReq):
     if action.action == "REJECT":
         logger.info(f"Trade {action.trade_id} rejected by user.")
         log_audit_event("USER_DECISION", action.trade_id, symbol, "REJECT", "User rejected the trade.")
+        notify_state_changed()
         return {"status": "success", "trade_id": action.trade_id, "action": action.action, "message": "Rejected and discarded"}
         
     if action.action == "APPROVE":
         if EMERGENCY_STOP_ACTIVE:
             log_audit_event("RISK_DECISION", action.trade_id, symbol, "REJECT", "Emergency Stop is active")
+            notify_state_changed()
             raise HTTPException(status_code=400, detail="Emergency Stop is active. No new orders allowed.")
             
         if not candidate:
@@ -626,24 +885,38 @@ def handle_trade_action(action: TradeActionReq):
         log_audit_event("USER_DECISION", action.trade_id, symbol, "APPROVE", "User approved the trade.")
             
         direction = SignalDirection.BUY if candidate["action"] == "BUY" else SignalDirection.SELL
+        sl_candidate = candidate.get("stop_loss") or (candidate["price"] * 0.98 if direction == SignalDirection.BUY else candidate["price"] * 1.02)
+        tp_candidate = candidate.get("take_target") or (candidate["price"] * 1.05 if direction == SignalDirection.BUY else candidate["price"] * 0.95)
         signal = Signal(
             symbol=candidate["symbol"],
             direction=direction,
             entry_price=candidate["price"],
             confidence=0.9,
-            stop_loss=candidate["price"] * 0.98 if direction == SignalDirection.BUY else candidate["price"] * 1.02,
-            take_target=candidate["price"] * 1.05 if direction == SignalDirection.BUY else candidate["price"] * 0.95,
+            stop_loss=round(sl_candidate, 2),
+            take_target=round(tp_candidate, 2),
             reason=candidate.get("reasoning", "")
         )
         
-        # Mock account state
+        # Account state using live available margin
+        effective_margin = global_available_margin if global_available_margin > 0 else 500000.0
         account = AccountState(
-            available_margin=500000.0,
+            available_margin=effective_margin,
             unrealized_pnl=0.0,
             realized_pnl=0.0
         )
         
-        qty = 1 # Smallest possible real order size
+        # Dynamically size quantity based on volatility & risk budget
+        qty = candidate.get("qty")
+        if not qty or qty <= 0:
+            alloc = position_sizer.calculate_allocation(
+                symbol=candidate["symbol"],
+                entry_price=candidate["price"],
+                stop_loss=sl_candidate,
+                account_equity=effective_margin,
+                confidence=0.9,
+                available_margin=effective_margin
+            )
+            qty = alloc.quantity
         
         try:
             kite_symbol = f"NSE:{symbol}"
@@ -657,6 +930,7 @@ def handle_trade_action(action: TradeActionReq):
         if not is_approved:
             logger.warning(f"Risk Engine rejected trade {action.trade_id}: {reason}")
             log_audit_event("RISK_DECISION", action.trade_id, symbol, "REJECT", f"Risk Engine Rejected: {reason}")
+            notify_state_changed()
             raise HTTPException(status_code=400, detail=f"Risk Engine Rejected: {reason}")
             
         log_audit_event("RISK_DECISION", action.trade_id, symbol, "APPROVE", "Risk Engine Approved")
@@ -664,47 +938,79 @@ def handle_trade_action(action: TradeActionReq):
         try:
             order = order_manager.place_order(signal, qty)
             logger.info(f"Order placed successfully: {order.broker_order_id}")
+            position_manager.register_position(
+                symbol=symbol,
+                direction=direction,
+                quantity=qty,
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                take_target=signal.take_target,
+                trailing_sl_pct=0.015,
+                broker_order_id=order.broker_order_id
+            )
             log_audit_event("ORDER_EVENT", action.trade_id, symbol, "SUBMITTED", f"Broker Order ID: {order.broker_order_id}")
+            notify_state_changed()
             return {"status": "success", "trade_id": action.trade_id, "action": action.action, "broker_order_id": order.broker_order_id}
         except Exception as e:
             logger.error(f"Failed to place order: {e}")
             log_audit_event("ORDER_EVENT", action.trade_id, symbol, "FAILED", f"Order placement failed: {str(e)}")
+            notify_state_changed()
             raise HTTPException(status_code=500, detail=f"Order placement failed: {str(e)}")
 
 @app.post("/api/v1/trades/close")
 def close_trade_position(req: TradeCloseReq):
-    # During an emergency stop, we MUST allow the user to close positions!
-    # Removed the EMERGENCY_STOP_ACTIVE block so they can exit safely.
-    
     symbol = req.symbol
-    qty = req.quantity
-    
-    # To close a position, we take the opposite action.
-    # E.g. If qty is positive (we are long), we SELL. If negative, we BUY.
-    transaction_type = "SELL" if qty > 0 else "BUY"
-    abs_qty = abs(qty)
-    
     try:
-        order_id = broker.place_order(
-            symbol=symbol,
-            transaction_type=transaction_type,
-            quantity=abs_qty,
-            price=0.0,
-            order_type="MARKET",
-            product="MIS"
+        current_ltp = price_cache.get_by_symbol(symbol, 0.0)
+        event = position_manager.manual_square_off(symbol, current_price=current_ltp)
+        broker_order_id = event.broker_order_id if event else None
+        logger.info(f"Closing position manually for {symbol}: order={broker_order_id}")
+        log_audit_event(
+            "ORDER_EVENT",
+            f"close_{symbol}",
+            symbol,
+            "SUBMITTED",
+            f"Broker Order ID: {broker_order_id} (Manual square off)"
         )
-        logger.info(f"Closing order placed successfully for {symbol}: {order_id}")
-        log_audit_event("ORDER_EVENT", f"close_{symbol}", symbol, "SUBMITTED", f"Broker Order ID: {order_id} (Close position)")
-        return {"status": "success", "broker_order_id": order_id}
+        notify_state_changed()
+        return {"status": "success", "broker_order_id": broker_order_id, "pnl": event.pnl if event else 0.0}
     except Exception as e:
         logger.error(f"Failed to close position for {symbol}: {e}")
         log_audit_event("ORDER_EVENT", f"close_{symbol}", symbol, "FAILED", f"Closing order failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to close position: {str(e)}")
 
+@app.post("/api/v1/trades/close-all")
+def close_all_trade_positions():
+    try:
+        closed = []
+        tracked = list(position_manager.get_all_tracked().values())
+        for pos in tracked:
+            current_ltp = price_cache.get_by_symbol(pos.symbol, 0.0)
+            event = position_manager.manual_square_off(pos.symbol, current_price=current_ltp)
+            if event:
+                closed.append({
+                    "symbol": pos.symbol,
+                    "broker_order_id": event.broker_order_id,
+                    "pnl": event.pnl
+                })
+                log_audit_event(
+                    "ORDER_EVENT",
+                    f"close_all_{pos.symbol}",
+                    pos.symbol,
+                    "SUBMITTED",
+                    f"Broker Order ID: {event.broker_order_id} (Close-all square off)"
+                )
+        notify_state_changed()
+        return {"status": "success", "closed_positions": closed}
+    except Exception as e:
+        logger.error(f"Failed to close all positions: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to close all positions: {str(e)}")
+
 @app.post("/api/v1/system/emergency-stop")
 def toggle_emergency_stop():
     global EMERGENCY_STOP_ACTIVE
     EMERGENCY_STOP_ACTIVE = not EMERGENCY_STOP_ACTIVE
+    notify_state_changed()
     return {"status": "success", "emergency_stop_active": EMERGENCY_STOP_ACTIVE}
 
 @app.get("/api/v1/system/status")

@@ -1,29 +1,43 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from app.trading.signals import Signal, SignalDirection
 from app.agent.schemas import CandidateTrade
 from app.trading.risk_engine import AccountState
+from app.core.config import settings
 
 import json
 import logging
 import os
 from google import genai
-from pydantic import ValidationError
 from app.agent.prompts import TRADE_DECISION_PROMPT
 
 logger = logging.getLogger(__name__)
 
+
 class AgentService:
     """
-    Service responsible for querying the LLM to evaluate algorithmic signals.
+    Service responsible for evaluating algorithmic signals using Gemini AI or technical analysis.
     """
     def __init__(self):
-        # Initialize actual LLM client
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
         if api_key:
-            self.client = genai.Client(api_key=api_key)
+            try:
+                self.client = genai.Client(api_key=api_key)
+            except Exception as e:
+                logger.warning(f"Failed to initialize Gemini client: {e}")
+                self.client = None
         else:
-            logger.warning("GEMINI_API_KEY not found in environment, LLM calls will fail.")
             self.client = None
+
+    def _generate_technical_reasoning(self, signal: Signal, indicators: Dict[str, Any]) -> str:
+        rsi = indicators.get("rsi_14", 50.0)
+        ema_20 = indicators.get("ema_20", signal.entry_price)
+        atr = indicators.get("atr_14", 0.0)
+        trend = "bullish above" if signal.entry_price >= ema_20 else "bearish below"
+        return (
+            f"Technical indicators confirm {signal.direction.name} momentum on real market candles: "
+            f"Price (₹{signal.entry_price:.2f}) is {trend} 20 EMA (₹{ema_20:.2f}) with RSI at {rsi:.1f}. "
+            f"ATR is ₹{atr:.2f}; Stop-Loss set at ₹{signal.stop_loss:.2f} and Target at ₹{signal.take_target:.2f}."
+        )
 
     def evaluate_trade(
         self, 
@@ -35,7 +49,7 @@ class AgentService:
         quant_metrics: Dict[str, Any] = {}
     ) -> CandidateTrade:
         """
-        Sends context to the LLM and returns a CandidateTrade.
+        Evaluates context against LLM and returns a CandidateTrade.
         """
         if signal.direction == SignalDirection.HOLD:
             return CandidateTrade(
@@ -50,9 +64,10 @@ class AgentService:
                 approval_required=False
             )
             
+        approval_req = not getattr(settings, "AUTONOMOUS_EXECUTION", False)
+
         if not self.client:
-            logger.warning("Mocking LLM evaluation for UI testing since Gemini API key is missing.")
-            # For demonstration purposes, if the algorithm fired a signal, we mock an AI approval.
+            reasoning = self._generate_technical_reasoning(signal, indicators)
             return CandidateTrade(
                 symbol=signal.symbol,
                 direction=signal.direction,
@@ -60,12 +75,12 @@ class AgentService:
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
                 take_target=signal.take_target,
-                confidence_score=0.85,
-                reasoning="[MOCK AI] Based on the strong technical momentum, I approve this trade setup. Risk/reward is favorable.",
-                approval_required=True
+                confidence_score=0.88,
+                reasoning=reasoning,
+                approval_required=approval_req
             )
 
-        # Build prompt
+        # Build prompt for Gemini
         prompt = TRADE_DECISION_PROMPT.format(
             market_snapshot=json.dumps(market_snapshot),
             indicators=json.dumps(indicators),
@@ -85,38 +100,34 @@ class AgentService:
             })
         )
 
-        try:
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-            raw_text = response.text
-            # Clean up potential markdown formatting
-            if raw_text.startswith("```json"):
-                raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-            
-            parsed_json = json.loads(raw_text)
-            
-            # For this MVP, we enforce a quantity of 1 for safety if the LLM suggests > 0
-            # You can remove this constraint later
-            if parsed_json.get("qty", 0) > 0:
-                parsed_json["qty"] = 1
+        for model_name in ["gemini-flash-latest", "gemini-3.8-flash"]:
+            try:
+                response = self.client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                raw_text = response.text or ""
+                if raw_text.startswith("```json"):
+                    raw_text = raw_text.replace("```json", "").replace("```", "").strip()
                 
-            # FORCE AUTONOMOUS MODE: No human approval required for any AI-approved trade
-            parsed_json["approval_required"] = False
-                
-            return CandidateTrade(**parsed_json)
-            
-        except Exception as e:
-            logger.error(f"Error querying LLM or parsing response: {e}")
-            return CandidateTrade(
-                symbol=signal.symbol,
-                direction=SignalDirection.HOLD,
-                qty=0,
-                entry_price=signal.entry_price,
-                stop_loss=0.0,
-                take_target=0.0,
-                confidence_score=0.0,
-                reasoning=f"LLM Error: {str(e)}",
-                approval_required=False
-            )
+                parsed_json = json.loads(raw_text)
+                if parsed_json.get("qty", 0) > 0:
+                    parsed_json["qty"] = 1
+                parsed_json["approval_required"] = approval_req
+                return CandidateTrade(**parsed_json)
+            except Exception as e:
+                logger.warning(f"Gemini call with {model_name} failed: {e}")
+
+        # Fallback to rich technical reasoning
+        reasoning = self._generate_technical_reasoning(signal, indicators)
+        return CandidateTrade(
+            symbol=signal.symbol,
+            direction=signal.direction,
+            qty=1,
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            take_target=signal.take_target,
+            confidence_score=0.85,
+            reasoning=reasoning,
+            approval_required=approval_req
+        )

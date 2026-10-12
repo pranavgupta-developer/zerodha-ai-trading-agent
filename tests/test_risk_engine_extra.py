@@ -3,7 +3,7 @@ from app.trading.risk_engine import RiskEngine, RiskConfig, AccountState
 from app.trading.signals import Signal, SignalDirection
 
 def test_max_open_positions():
-    config = RiskConfig(max_open_positions=2)
+    config = RiskConfig(max_open_positions=2, check_market_hours=False)
     engine = RiskEngine(config)
     
     account = AccountState(
@@ -12,18 +12,18 @@ def test_max_open_positions():
     )
     
     # Trying to buy a new stock
-    sig = Signal(symbol="TCS", direction=SignalDirection.BUY, entry_price=100, timestamp="2023")
+    sig = Signal(symbol="TCS", direction=SignalDirection.BUY, confidence=1.0, entry_price=100, stop_loss=90, take_target=110, timestamp="2023")
     approved, reason = engine.validate_signal(sig, account, 10)
     assert not approved
     assert "Max open positions (2) reached" in reason
     
     # Trying to buy more of an existing stock
-    sig_exist = Signal(symbol="RELIANCE", direction=SignalDirection.BUY, entry_price=100, timestamp="2023")
+    sig_exist = Signal(symbol="RELIANCE", direction=SignalDirection.BUY, confidence=1.0, entry_price=100, stop_loss=90, take_target=110, timestamp="2023")
     approved, reason = engine.validate_signal(sig_exist, account, 10)
     assert approved
     
 def test_max_drawdown():
-    config = RiskConfig(max_drawdown_pct=0.05)
+    config = RiskConfig(max_drawdown_pct=0.05, check_market_hours=False)
     engine = RiskEngine(config)
     
     # Peak margin was 100,000. Current equity is 90,000 (10% drawdown)
@@ -34,7 +34,7 @@ def test_max_drawdown():
         unrealized_pnl=0
     )
     
-    sig = Signal(symbol="TCS", direction=SignalDirection.BUY, entry_price=100, timestamp="2023")
+    sig = Signal(symbol="TCS", direction=SignalDirection.BUY, confidence=1.0, entry_price=100, stop_loss=90, take_target=110, timestamp="2023")
     approved, reason = engine.validate_signal(sig, account, 10)
     assert not approved
     assert "Max drawdown exceeded" in reason

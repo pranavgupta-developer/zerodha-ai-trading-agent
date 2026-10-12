@@ -6,25 +6,28 @@ from app.agent.schemas import CandidateTrade
 from app.agent.service import AgentService
 from app.trading.risk_engine import RiskEngine, AccountState
 from app.trading.order_manager import OrderManager, ManagedOrder
+from app.trading.position_sizer import DynamicPositionSizer
 
 logger = logging.getLogger(__name__)
 
 class TradingPipeline:
     """
     Orchestrates the entire trading flow:
-    Data -> Strategy -> AI Agent -> Risk Engine -> Order Manager
+    Data -> Strategy -> AI Agent -> Dynamic Sizing -> Risk Engine -> Order Manager
     """
     def __init__(
         self, 
         strategy: EmaRsiVwapStrategy, 
         agent: AgentService, 
         risk_engine: RiskEngine, 
-        order_manager: OrderManager
+        order_manager: OrderManager,
+        position_sizer: Optional[DynamicPositionSizer] = None
     ):
         self.strategy = strategy
         self.agent = agent
         self.risk_engine = risk_engine
         self.order_manager = order_manager
+        self.position_sizer = position_sizer or DynamicPositionSizer()
 
     def process_tick(
         self, 
@@ -54,11 +57,27 @@ class TradingPipeline:
         
         if candidate_trade.direction == SignalDirection.HOLD:
             return candidate_trade, None, f"AI Agent rejected trade: {candidate_trade.reasoning}"
+
+        # 2b. Dynamic Capital Allocation & Position Sizing
+        atr_val = indicators.get("atr_14") if indicators else None
+        alloc = self.position_sizer.calculate_allocation(
+            symbol=candidate_trade.symbol,
+            entry_price=candidate_trade.entry_price,
+            stop_loss=candidate_trade.stop_loss,
+            account_equity=account_state.available_margin,
+            atr=atr_val,
+            confidence=candidate_trade.confidence_score,
+            available_margin=account_state.available_margin
+        )
+        candidate_trade.qty = alloc.quantity
+        candidate_trade.allocated_capital = alloc.allocated_capital
+        candidate_trade.risk_budget = alloc.risk_budget
+        candidate_trade.risk_pct = alloc.risk_budget_pct
+        candidate_trade.sizing_rationale = alloc.sizing_rationale
             
-        # User requested fully autonomous execution - bypass human approval
-        # if candidate_trade.approval_required:
-        #     # Awaits human-in-the-loop approval
-        #     return candidate_trade, None, "Trade requires human approval."
+        # Check if human approval is required
+        if candidate_trade.approval_required:
+            return candidate_trade, None, "Awaiting operator approval."
 
         # 3. Risk Engine Validation
         # Construct risk signal from CandidateTrade
