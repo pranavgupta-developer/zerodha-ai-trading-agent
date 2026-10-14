@@ -9,7 +9,7 @@ class RiskConfig(BaseModel):
     max_orders_per_min: int = 5              # Rate limit
     max_orders_per_day: int = 50             # Global daily limit
     max_position_size: float = 500000.0      # Max capital in a single symbol
-    max_total_exposure: float = 2000000.0    # Max capital across all symbols
+    max_total_exposure: float = 500000.0     # Max capital across all symbols
     max_open_positions: int = 10             # Max number of discrete assets to hold
     max_daily_loss: float = 10000.0          # Absolute stop trading if loss > this
     max_daily_loss_pct: float = 0.02         # Or if loss > 2% of actual margin

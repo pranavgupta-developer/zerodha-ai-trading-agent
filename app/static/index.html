@@ -70,13 +70,17 @@
                         <h3>Available Margin</h3>
                         <div class="value" id="margin-val">₹--</div>
                     </div>
+                    <div class="summary-card" style="border-left: 3px solid var(--accent-blue);">
+                        <h3>Overall Day Profit</h3>
+                        <div class="value positive" id="total-day-pnl-val">₹0.00</div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>Unrealized MTM</h3>
+                        <div class="value" id="unrealized-pnl-val">₹--</div>
+                    </div>
                     <div class="summary-card">
                         <h3>Realized P&L</h3>
                         <div class="value positive" id="realized-pnl-val">₹--</div>
-                    </div>
-                    <div class="summary-card">
-                        <h3>Unrealized P&L</h3>
-                        <div class="value" id="unrealized-pnl-val">₹--</div>
                     </div>
                 </div>
 
@@ -123,10 +127,11 @@
                 </div>
             </section>
             
-            <!-- Bottom Row: Candidate Trades -->
+            <!-- Bottom Row: Autonomous Execution Stream -->
             <section class="panel candidate-trades-panel">
-                <div class="panel-header">
-                    <h2>Candidate Trades (AI Recommended)</h2>
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>Autonomous AI Execution Stream (Zero Human Approval)</h2>
+                    <span class="signal-badge signal-buy" style="font-size: 0.75rem; padding: 4px 10px;">⚡ 100% AUTONOMOUS</span>
                 </div>
                 
                 <div class="table-container">
@@ -136,13 +141,14 @@
                                 <th>Symbol</th>
                                 <th>Action</th>
                                 <th>Price</th>
-                                <th>AI Reasoning</th>
-                                <th>Actions</th>
+                                <th>Qty / Capital</th>
+                                <th>AI Reasoning & Sizing</th>
+                                <th>Execution Status</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr id="no-candidates-row">
-                                <td colspan="5" style="text-align: center; color: var(--text-muted);">Waiting for AI trade signals...</td>
+                                <td colspan="6" style="text-align: center; color: var(--text-muted);">Autonomous execution engine active. Awaiting quantitative signals...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -176,6 +182,6 @@
         </main>
     </div>
 
-    <script src="/static/app.js?v=6"></script>
+    <script src="/static/app.js?v=8"></script>
 </body>
 </html>

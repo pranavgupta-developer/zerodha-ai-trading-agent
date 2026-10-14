@@ -5,9 +5,37 @@ const mockHoldings = [];
 const prevLtpMap = {};
 window.isWebSocketConnected = false;
 
+let currentRealizedPnl = 0.0;
+let currentUnrealizedPnl = 0.0;
+
 function formatCurrency(value) {
     if (isNaN(value) || value === null || value === undefined) return '₹0.00';
     return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(value);
+}
+
+function updatePnlSummary(realized = null, unrealized = null) {
+    if (realized !== null && !isNaN(realized)) currentRealizedPnl = Number(realized);
+    if (unrealized !== null && !isNaN(unrealized)) currentUnrealizedPnl = Number(unrealized);
+
+    const totalDayProfit = currentRealizedPnl + currentUnrealizedPnl;
+
+    const totalDayEl = document.getElementById('total-day-pnl-val');
+    if (totalDayEl) {
+        totalDayEl.textContent = formatCurrency(totalDayProfit);
+        totalDayEl.className = `value ${totalDayProfit >= 0 ? 'positive' : 'negative'}`;
+    }
+
+    const realizedEl = document.getElementById('realized-pnl-val');
+    if (realizedEl) {
+        realizedEl.textContent = formatCurrency(currentRealizedPnl);
+        realizedEl.className = `value ${currentRealizedPnl >= 0 ? 'positive' : 'negative'}`;
+    }
+
+    const unrealizedEl = document.getElementById('unrealized-pnl-val');
+    if (unrealizedEl) {
+        unrealizedEl.textContent = formatCurrency(currentUnrealizedPnl);
+        unrealizedEl.className = `value ${currentUnrealizedPnl >= 0 ? 'positive' : 'negative'}`;
+    }
 }
 
 function updateTime() {
@@ -84,11 +112,7 @@ function renderPositions() {
 
     if (mockPositions.length === 0) {
         tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No open positions.</td></tr>';
-        const unrealizedEl = document.getElementById('unrealized-pnl-val');
-        if (unrealizedEl) {
-            unrealizedEl.textContent = '₹0.00';
-            unrealizedEl.className = 'value';
-        }
+        updatePnlSummary(null, 0.0);
         return;
     }
 
@@ -141,12 +165,8 @@ function renderPositions() {
         `;
     });
 
-    // Update summary card with live unrealized P&L
-    const unrealizedEl = document.getElementById('unrealized-pnl-val');
-    if (unrealizedEl) {
-        unrealizedEl.textContent = formatCurrency(totalUnrealized);
-        unrealizedEl.className = `value ${totalUnrealized >= 0 ? 'positive' : 'negative'}`;
-    }
+    // Update summary card with live unrealized P&L and total day profit
+    updatePnlSummary(null, totalUnrealized);
 }
 
 function renderHoldings() {
@@ -213,16 +233,9 @@ function handleMarketUpdate(data) {
         const marginEl = document.getElementById('margin-val');
         if (marginEl) marginEl.textContent = formatCurrency(data.account_stats.margin);
         
-        const realizedEl = document.getElementById('realized-pnl-val');
-        if (realizedEl) realizedEl.textContent = formatCurrency(data.account_stats.realized_pnl);
-
-        if (data.account_stats.unrealized_pnl !== undefined) {
-            const unrealizedEl = document.getElementById('unrealized-pnl-val');
-            if (unrealizedEl) {
-                unrealizedEl.textContent = formatCurrency(data.account_stats.unrealized_pnl);
-                unrealizedEl.className = `value ${data.account_stats.unrealized_pnl >= 0 ? 'positive' : 'negative'}`;
-            }
-        }
+        const realized = Number(data.account_stats.realized_pnl || 0);
+        const unrealized = Number(data.account_stats.unrealized_pnl || 0);
+        updatePnlSummary(realized, unrealized);
     }
 
     if (data.emergency_stop_active !== undefined) {
@@ -230,6 +243,10 @@ function handleMarketUpdate(data) {
     }
     
     window.current_backend_ts = data.backend_ts;
+    
+    if (data.autonomous_trades && Array.isArray(data.autonomous_trades)) {
+        data.autonomous_trades.forEach(t => renderAutonomousTrade(t));
+    }
     
     renderWatchlist();
     renderPositions();
@@ -265,7 +282,7 @@ function appendAuditLog(log) {
     tbody.insertBefore(tr, tbody.firstChild);
 }
 
-function renderCandidate(candidate) {
+function renderAutonomousTrade(trade) {
     const tbody = document.querySelector('#candidate-trades-table tbody');
     if (!tbody) return;
     const noCandidatesRow = document.getElementById('no-candidates-row');
@@ -273,23 +290,28 @@ function renderCandidate(candidate) {
         noCandidatesRow.remove();
     }
     
-    // Avoid duplicate candidates
-    if (document.getElementById(`trade-${candidate.id}`)) return;
+    // Avoid duplicate rows
+    if (document.getElementById(`trade-${trade.id}`)) return;
 
     const tr = document.createElement('tr');
-    tr.id = `trade-${candidate.id}`;
+    tr.id = `trade-${trade.id}`;
     tr.className = 'new-row-highlight';
     
-    const actionClass = candidate.action === 'BUY' ? 'signal-buy' : 'signal-sell';
+    const actionClass = trade.action === 'BUY' ? 'signal-buy' : 'signal-sell';
+    const qty = trade.qty || 1;
+    const capitalStr = trade.allocated_capital ? `₹${Number(trade.allocated_capital).toLocaleString('en-IN')}` : '-';
     
     tr.innerHTML = `
-        <td style="font-weight: 600;">${candidate.symbol}</td>
-        <td><span class="signal-badge ${actionClass}">${candidate.action}</span></td>
-        <td>₹${Number(candidate.price).toFixed(2)}</td>
-        <td class="ai-reasoning">${candidate.reasoning}</td>
+        <td style="font-weight: 600;">${trade.symbol}</td>
+        <td><span class="signal-badge ${actionClass}">${trade.action}</span></td>
+        <td style="font-variant-numeric: tabular-nums;">₹${Number(trade.price).toFixed(2)}</td>
+        <td style="font-variant-numeric: tabular-nums;">${qty} sh (${capitalStr})</td>
+        <td class="ai-reasoning">
+            ${trade.reasoning || '-'}
+            ${trade.sizing_rationale ? `<div style="font-size: 0.7rem; color: var(--accent-blue); margin-top: 2px;">${trade.sizing_rationale}</div>` : ''}
+        </td>
         <td>
-            <button class="btn btn-approve" onclick="handleTradeAction('${candidate.id}', 'APPROVE')">Approve</button>
-            <button class="btn btn-reject" onclick="handleTradeAction('${candidate.id}', 'REJECT')">Reject</button>
+            <span class="signal-badge signal-buy" style="font-size: 0.7rem; padding: 2px 6px;">⚡ AUTO-EXECUTED</span>
         </td>
     `;
     tbody.insertBefore(tr, tbody.firstChild);
@@ -328,8 +350,10 @@ function setupWebSocket() {
             const data = JSON.parse(event.data);
             if (data.type === 'market_update') {
                 handleMarketUpdate(data);
+            } else if (data.type === 'autonomous_trade') {
+                renderAutonomousTrade(data.trade);
             } else if (data.type === 'candidate_trade') {
-                renderCandidate(data.candidate);
+                renderAutonomousTrade(data.candidate);
             } else if (data.type === 'audit_log') {
                 appendAuditLog(data.log);
             }

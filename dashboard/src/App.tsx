@@ -5,9 +5,8 @@ import {
   TrendingUp, 
   AlertTriangle, 
   Power, 
-  BarChart2, 
   CheckCircle2, 
-  XCircle 
+  Zap 
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8000/api/v1";
@@ -20,7 +19,9 @@ export default function App() {
   const [positions, setPositions] = useState<any[]>([]);
   const [margin, setMargin] = useState(0);
   const [pnl, setPnl] = useState(0);
-  const [candidates, setCandidates] = useState<any[]>([]);
+  const [dayRealizedPnl, setDayRealizedPnl] = useState(0);
+  const [dayUnrealizedPnl, setDayUnrealizedPnl] = useState(0);
+  const [autonomousTrades, setAutonomousTrades] = useState<any[]>([]);
   const [securityEvents, setSecurityEvents] = useState(0);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -29,6 +30,7 @@ export default function App() {
 
   useEffect(() => {
     fetchSystemStatus();
+    fetchPortfolio();
     fetchAuditLogs();
     connectWebSocket();
 
@@ -51,6 +53,35 @@ export default function App() {
       setSystemState(data.emergency_stop_active ? 'HALTED' : 'LIVE');
     } catch (e) {
       console.error("Failed to fetch system status", e);
+    }
+  };
+
+  const fetchPortfolio = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/portfolio`);
+      const data = await res.json();
+      if (data) {
+        setWatchlist(data.watchlist || []);
+        setPositions(data.positions || []);
+        setMargin(data.account_stats?.margin || 0);
+        if (data.autonomous_trades && Array.isArray(data.autonomous_trades)) {
+          setAutonomousTrades(data.autonomous_trades);
+        }
+        const realized = Number(data.account_stats?.realized_pnl || 0);
+        const holdingsPnl = (data.holdings || []).reduce((acc: number, h: any) => acc + (h.pnl || 0), 0);
+        const posPnl = (data.positions || []).reduce((acc: number, p: any) => acc + (p.pnl || 0), 0);
+        const unrealized = (data.account_stats?.unrealized_pnl !== undefined) 
+          ? Number(data.account_stats.unrealized_pnl) 
+          : (holdingsPnl + posPnl);
+        const dayPnl = (data.account_stats?.total_day_pnl !== undefined)
+          ? Number(data.account_stats.total_day_pnl)
+          : (realized + unrealized);
+        setDayRealizedPnl(realized);
+        setDayUnrealizedPnl(unrealized);
+        setPnl(dayPnl);
+      }
+    } catch (e) {
+      console.error("Failed to fetch initial portfolio", e);
     }
   };
 
@@ -85,14 +116,29 @@ export default function App() {
           setPositions(data.positions || []);
           setMargin(data.account_stats?.margin || 0);
           
+          const realized = Number(data.account_stats?.realized_pnl || 0);
           const holdingsPnl = (data.holdings || []).reduce((acc: number, h: any) => acc + (h.pnl || 0), 0);
           const posPnl = (data.positions || []).reduce((acc: number, p: any) => acc + (p.pnl || 0), 0);
-          setPnl(holdingsPnl + posPnl);
-        } else if (data.type === 'candidate_trade') {
-          setCandidates(prev => {
-            if (prev.find(c => c.id === data.candidate.id)) return prev;
-            return [...prev, data.candidate];
+          const unrealized = (data.account_stats?.unrealized_pnl !== undefined) 
+            ? Number(data.account_stats.unrealized_pnl) 
+            : (holdingsPnl + posPnl);
+          const dayPnl = (data.account_stats?.total_day_pnl !== undefined)
+            ? Number(data.account_stats.total_day_pnl)
+            : (realized + unrealized);
+          setDayRealizedPnl(realized);
+          setDayUnrealizedPnl(unrealized);
+          setPnl(dayPnl);
+
+          if (data.autonomous_trades && Array.isArray(data.autonomous_trades)) {
+            setAutonomousTrades(data.autonomous_trades);
+          }
+        } else if (data.type === 'autonomous_trade') {
+          setAutonomousTrades(prev => {
+            if (prev.find(t => t.id === data.trade.id)) return prev;
+            return [data.trade, ...prev].slice(0, 30);
           });
+          showToast(`⚡ Auto-Executed: ${data.trade.action} ${data.trade.qty}x ${data.trade.symbol} @ ₹${Number(data.trade.price).toFixed(2)}`);
+          fetchAuditLogs();
         }
       } catch (e) {
         console.error("WS Parse error", e);
@@ -109,27 +155,6 @@ export default function App() {
     } catch (e) {
       console.error("Emergency stop failed", e);
       showToast("Emergency stop request failed", "danger");
-    }
-  };
-
-  const handleTradeAction = async (tradeId: string, action: string) => {
-    setCandidates(prev => prev.filter(c => c.id !== tradeId));
-    try {
-      const res = await fetch(`${API_BASE}/trades/action`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trade_id: tradeId, action })
-      });
-      if (res.ok) {
-        showToast(`Trade ${action === 'APPROVE' ? 'Approved & Submitted' : 'Rejected'}`);
-      } else {
-        const err = await res.json();
-        showToast(err.detail || "Trade action rejected", "danger");
-      }
-      fetchAuditLogs();
-    } catch (e) {
-      console.error("Trade action failed", e);
-      showToast("Trade action request failed", "danger");
     }
   };
 
@@ -232,6 +257,13 @@ export default function App() {
             </div>
             
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ color: 'var(--text-secondary)' }}>Execution Mode</span>
+              <span className="status-badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                <div className="pulse-dot" style={{ background: '#10b981' }}></div> AUTONOMOUS
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ color: 'var(--text-secondary)' }}>Exit Monitor</span>
               <span className="status-badge status-live">
                 <div className="pulse-dot"></div> ACTIVE (SL/TP)
@@ -257,10 +289,27 @@ export default function App() {
       <main className="main-content">
         <header className="header-bar animate-enter">
           <div>
-            <h1 style={{ fontSize: '28px', color: '#fff' }}>Operator Dashboard</h1>
-            <p style={{ color: 'var(--text-secondary)', marginTop: '4px' }}>Autonomous trade lifecycle & exit management</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <h1 style={{ fontSize: '28px', color: '#fff', margin: 0 }}>Autonomous Trading Terminal</h1>
+              <span className="status-badge" style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.4)' }}>
+                ⚡ ZERO-CLICK AUTO-EXECUTION
+              </span>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', marginTop: '4px' }}>Algorithmic signal generation, dynamic sizing, and automated broker execution</p>
           </div>
-          <div style={{ display: 'flex', gap: '24px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+            <div style={{ 
+              textAlign: 'right', 
+              background: pnl >= 0 ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)', 
+              padding: '8px 16px', 
+              borderRadius: '10px', 
+              border: pnl >= 0 ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid rgba(239, 68, 68, 0.25)' 
+            }}>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Overall Profit (Today)</div>
+              <div style={{ fontSize: '22px', fontWeight: 'bold', color: pnl >= 0 ? '#10b981' : '#ef4444', fontFamily: 'JetBrains Mono' }}>
+                {pnl >= 0 ? '+' : ''}₹{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Available Margin</div>
               <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#fff', fontFamily: 'JetBrains Mono' }}>
@@ -274,12 +323,16 @@ export default function App() {
           
           {/* Key Metrics */}
           <div className="col-span-12 dashboard-grid animate-enter delay-1">
-            <div className="col-span-3 glass-panel card">
+            <div className="col-span-3 glass-panel card" style={{ borderLeft: pnl >= 0 ? '4px solid #10b981' : '4px solid #ef4444' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
-                <TrendingUp size={16} /> <span style={{ fontSize: '13px', fontWeight: 600, textTransform: 'uppercase' }}>Portfolio P&L</span>
+                <TrendingUp size={16} color={pnl >= 0 ? '#10b981' : '#ef4444'} /> 
+                <span style={{ fontSize: '13px', fontWeight: 600, textTransform: 'uppercase' }}>Overall Profit of the Day</span>
               </div>
               <div className={`metric-value ${pnl >= 0 ? 'text-success' : 'text-danger'}`} style={{ background: 'none', WebkitTextFillColor: 'initial' }}>
                 {pnl >= 0 ? '+' : ''}₹{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                Unrealized MTM: <span style={{ color: dayUnrealizedPnl >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>{dayUnrealizedPnl >= 0 ? '+' : ''}₹{dayUnrealizedPnl.toFixed(2)}</span> | Realized: <span style={{ color: '#fff', fontWeight: 600 }}>₹{dayRealizedPnl.toFixed(2)}</span>
               </div>
             </div>
             
@@ -290,12 +343,12 @@ export default function App() {
               <div className="metric-value">{positions.length}</div>
             </div>
 
-            <div className="col-span-3 glass-panel card">
+            <div className="col-span-3 glass-panel card" style={{ borderLeft: '4px solid #10b981' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}>
-                <BarChart2 size={16} /> <span style={{ fontSize: '13px', fontWeight: 600, textTransform: 'uppercase' }}>Anomaly Score</span>
+                <Zap size={16} color="#10b981" /> <span style={{ fontSize: '13px', fontWeight: 600, textTransform: 'uppercase' }}>Auto-Executed Trades</span>
               </div>
-              <div className="metric-value">-0.24</div>
-              <div style={{ fontSize: '12px', color: 'var(--success)' }}>Normal bounds (Threshold: -0.50)</div>
+              <div className="metric-value" style={{ color: '#10b981' }}>{autonomousTrades.length}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>100% Autonomous (No approval needed)</div>
             </div>
 
             <div className="col-span-3 glass-panel card" style={{ borderLeft: '4px solid var(--warning)' }}>
@@ -306,75 +359,100 @@ export default function App() {
             </div>
           </div>
 
-          {/* Pending AI Approvals */}
+          {/* Autonomous AI Execution Stream */}
           <div className="col-span-8 glass-panel animate-enter delay-2" style={{ padding: '24px', minHeight: '380px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2>AI Candidate Trades (Pending Approval)</h2>
-              <span className="status-badge" style={{ background: 'var(--accent-primary-glow)', color: 'var(--accent-primary)' }}>{candidates.length} Pending</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <Zap size={22} color="#10b981" />
+                  <h2 style={{ margin: 0 }}>Autonomous Execution Stream</h2>
+                </div>
+                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                  Quant & ML signals executed directly into live dry-run broker with zero manual approval.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <span className="status-badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                  <div className="pulse-dot" style={{ background: '#10b981' }}></div>
+                  AUTONOMOUS ON
+                </span>
+                <span className="status-badge" style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
+                  {autonomousTrades.length} EXECUTED
+                </span>
+              </div>
             </div>
             
             {systemState === 'HALTED' ? (
               <div style={{ padding: '32px', textAlign: 'center', color: 'var(--danger)' }}>
                 <AlertTriangle size={32} style={{ margin: '0 auto 12px' }} />
                 <h3>TRADING HALTED</h3>
-                <p style={{ marginTop: '8px', color: 'var(--text-muted)' }}>New trades cannot be executed while the system is halted.</p>
+                <p style={{ marginTop: '8px', color: 'var(--text-muted)' }}>Autonomous execution is suspended while the system is halted.</p>
               </div>
-            ) : candidates.length === 0 ? (
-              <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                No pending trades.
+            ) : autonomousTrades.length === 0 ? (
+              <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px dashed var(--border)' }}>
+                <Zap size={32} style={{ margin: '0 auto 12px', color: '#10b981', opacity: 0.6 }} />
+                <h3 style={{ color: '#fff', fontSize: '16px' }}>Autonomous Engine Active & Scanning Market Data</h3>
+                <p style={{ marginTop: '8px', fontSize: '13px', maxWidth: '480px', margin: '8px auto 0' }}>
+                  As ML and Quant strategies detect signals, trades are automatically sized, risk-validated, and executed without manual approval.
+                </p>
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {candidates.map(candidate => (
-                  <div key={candidate.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '12px', padding: '20px', border: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '16px', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '440px', overflowY: 'auto', paddingRight: '4px' }}>
+                {autonomousTrades.map(trade => (
+                  <div key={trade.id} style={{ background: 'rgba(0,0,0,0.25)', borderRadius: '12px', padding: '20px', border: '1px solid rgba(16, 185, 129, 0.25)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '16px', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
                       <div>
                         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                          <h3 style={{ fontSize: '20px', color: '#fff', margin: 0 }}>{candidate.symbol}</h3>
-                          <span className="status-badge status-live">{candidate.action}</span>
+                          <h3 style={{ fontSize: '20px', color: '#fff', margin: 0 }}>{trade.symbol}</h3>
+                          <span className={`status-badge ${trade.action === 'BUY' ? 'status-live' : 'status-warning'}`}>{trade.action}</span>
+                          <span className="status-badge" style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.4)', fontWeight: 600 }}>
+                            ⚡ AUTO-EXECUTED
+                          </span>
                         </div>
                         <div style={{ display: 'flex', gap: '16px', marginTop: '12px', fontFamily: 'JetBrains Mono', fontSize: '13px', flexWrap: 'wrap', alignItems: 'center' }}>
-                          <div><span style={{ color: 'var(--text-secondary)' }}>Entry:</span> ₹{Number(candidate.price).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                          <div><span style={{ color: 'var(--danger)' }}>Stop-Loss:</span> ₹{Number(candidate.stop_loss || candidate.price * 0.98).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                          <div><span style={{ color: 'var(--success)' }}>Target:</span> ₹{Number(candidate.take_target || candidate.price * 1.05).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                          <div><span style={{ color: 'var(--text-secondary)' }}>Entry:</span> ₹{Number(trade.price).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                          <div><span style={{ color: 'var(--danger)' }}>Stop-Loss:</span> ₹{Number(trade.stop_loss || trade.price * 0.98).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                          <div><span style={{ color: 'var(--success)' }}>Target:</span> ₹{Number(trade.take_target || trade.price * 1.05).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                           <div style={{ background: 'rgba(56, 189, 248, 0.1)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(56, 189, 248, 0.2)' }}>
-                            <span style={{ color: '#38bdf8', fontWeight: 600 }}>Qty:</span> {candidate.qty || 1} shares
+                            <span style={{ color: '#38bdf8', fontWeight: 600 }}>Qty:</span> {trade.qty || 1} shares
                           </div>
-                          {candidate.allocated_capital && (
+                          {trade.allocated_capital && (
                             <div style={{ background: 'rgba(168, 85, 247, 0.1)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(168, 85, 247, 0.2)' }}>
-                              <span style={{ color: '#c084fc', fontWeight: 600 }}>Capital:</span> ₹{Number(candidate.allocated_capital).toLocaleString('en-IN')}
+                              <span style={{ color: '#c084fc', fontWeight: 600 }}>Capital:</span> ₹{Number(trade.allocated_capital).toLocaleString('en-IN')}
                             </div>
                           )}
-                          {candidate.risk_budget && (
+                          {trade.risk_budget && (
                             <div style={{ background: 'rgba(239, 68, 68, 0.1)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
-                              <span style={{ color: '#f87171', fontWeight: 600 }}>Risk Budget:</span> ₹{Number(candidate.risk_budget).toLocaleString('en-IN')} ({candidate.risk_pct}%)
+                              <span style={{ color: '#f87171', fontWeight: 600 }}>Risk Budget:</span> ₹{Number(trade.risk_budget).toLocaleString('en-IN')} ({trade.risk_pct}%)
                             </div>
                           )}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>AI Confidence</div>
-                        <div style={{ fontSize: '20px', color: 'var(--success)', fontWeight: 'bold' }}>High</div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'JetBrains Mono' }}>
+                          {trade.timestamp ? `Time: ${trade.timestamp}` : ''}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#38bdf8', fontFamily: 'JetBrains Mono', marginTop: '4px' }}>
+                          Order: #{trade.broker_order_id ? String(trade.broker_order_id).slice(-8) : String(trade.id).slice(-8)}
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#10b981', marginTop: '4px', fontWeight: 600 }}>
+                          ✓ PLACED WITH BROKER
+                        </div>
                       </div>
                     </div>
                     
-                    <div style={{ marginBottom: '16px' }}>
+                    <div style={{ marginBottom: '12px' }}>
                       <div style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: '4px' }}>AI Reasoning</div>
                       <p style={{ fontSize: '14px', color: 'var(--text-muted)', margin: 0 }}>
-                        {candidate.reasoning}
+                        {trade.reasoning}
                       </p>
                     </div>
 
-                    {candidate.sizing_rationale && (
-                      <div style={{ marginBottom: '16px', background: 'rgba(255,255,255,0.03)', padding: '8px 12px', borderRadius: '6px', fontSize: '12px', fontFamily: 'JetBrains Mono', color: 'var(--text-secondary)' }}>
-                        <span style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>Dynamic Sizer:</span> {candidate.sizing_rationale}
+                    {trade.sizing_rationale && (
+                      <div style={{ background: 'rgba(255,255,255,0.03)', padding: '8px 12px', borderRadius: '6px', fontSize: '12px', fontFamily: 'JetBrains Mono', color: 'var(--text-secondary)' }}>
+                        <span style={{ color: 'var(--accent-primary)', fontWeight: 600 }}>Dynamic Sizer:</span> {trade.sizing_rationale}
                       </div>
                     )}
-                    
-                    <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                      <button onClick={() => handleTradeAction(candidate.id, 'REJECT')} className="btn btn-outline" style={{ color: 'var(--danger)' }}><XCircle size={16}/> REJECT</button>
-                      <button onClick={() => handleTradeAction(candidate.id, 'APPROVE')} className="btn btn-primary"><CheckCircle2 size={16}/> APPROVE {candidate.qty ? `${candidate.qty} SHARES` : '& EXECUTE'}</button>
-                    </div>
                   </div>
                 ))}
               </div>
@@ -454,7 +532,7 @@ export default function App() {
                 {positions.length === 0 && (
                   <tr>
                     <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px' }}>
-                      No active positions. Approved candidate trades will appear here with active SL/TP monitors.
+                      No active positions. Auto-executed trades will appear here with active SL/TP monitors.
                     </td>
                   </tr>
                 )}

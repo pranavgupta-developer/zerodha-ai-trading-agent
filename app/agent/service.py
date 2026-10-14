@@ -64,7 +64,7 @@ class AgentService:
                 approval_required=False
             )
             
-        approval_req = not getattr(settings, "AUTONOMOUS_EXECUTION", False)
+        approval_req = not getattr(settings, "AUTONOMOUS_EXECUTION", True)
 
         if not self.client:
             reasoning = self._generate_technical_reasoning(signal, indicators)

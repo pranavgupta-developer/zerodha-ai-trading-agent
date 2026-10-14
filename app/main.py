@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 active_connections: list[WebSocket] = []
 candidate_cache: dict = {}
+autonomous_trades_history: list = []
 EMERGENCY_STOP_ACTIVE = False
 
 import threading
@@ -100,7 +101,6 @@ global_holdings: list = []
 global_positions: list = []
 global_available_margin: float = 0.0
 market_ticker = None
-current_watchlist_payload: list = []
 
 def notify_state_changed():
     """Triggers an immediate broadcast if active clients are connected."""
@@ -210,6 +210,25 @@ DEFAULT_BASE_PRICES = {
     "GRASIM": 2861.60,
     "ULTRACEMCO": 11200.00
 }
+
+# Pre-populate price_cache and current_watchlist_payload immediately on startup
+for _sym, _price in DEFAULT_BASE_PRICES.items():
+    price_cache.update_symbol(_sym, _price)
+
+current_watchlist_payload: list = [
+    {
+        "symbol": _sym,
+        "ltp": _price,
+        "prev_close": _price,
+        "change": 0.0,
+        "signal": "HOLD",
+        "status": "HEALTHY",
+        "source_ts": time.time(),
+        "rsi": 50.0,
+        "ml_predict": "NEUTRAL"
+    }
+    for _sym, _price in DEFAULT_BASE_PRICES.items()
+]
 
 def simulate_live_price_ticks():
     """
@@ -351,10 +370,13 @@ def build_portfolio_payload() -> dict:
         "watchlist": updated_watchlist,
         "positions": frontend_positions,
         "holdings": frontend_holdings,
+        "autonomous_trades": autonomous_trades_history,
+        "autonomous_execution": settings.AUTONOMOUS_EXECUTION,
         "account_stats": {
             "margin": global_available_margin,
-            "realized_pnl": 0.0,
-            "unrealized_pnl": round(total_unrealized_pnl, 2)
+            "realized_pnl": round(position_manager.get_realized_pnl(), 2),
+            "unrealized_pnl": round(total_unrealized_pnl, 2),
+            "total_day_pnl": round(position_manager.get_realized_pnl() + total_unrealized_pnl, 2)
         },
         "emergency_stop_active": EMERGENCY_STOP_ACTIVE,
         "backend_ts": time.time()
@@ -501,7 +523,7 @@ async def simulate_trades_stream():
                     batch_df = await asyncio.to_thread(
                         yf.download,
                         tickers=active_symbols,
-                        period="5d",
+                        period="1d",
                         interval="1m",
                         group_by="ticker",
                         progress=False
@@ -578,8 +600,13 @@ async def simulate_trades_stream():
                         
                     change = ((current_price - prev_close) / prev_close) * 100 if prev_close else 0.0
                 
+                    clean_sym = display_symbols[sym]
+                    existing_pos = position_manager.get_tracked_position(clean_sym)
+                    active_pos_map = {p.symbol: p.quantity * p.entry_price for p in position_manager.get_all_tracked().values()}
+                    effective_margin = global_available_margin if global_available_margin > 0 else 500000.0
+                    account_state = AccountState(available_margin=effective_margin, unrealized_pnl=0.0, realized_pnl=0.0, open_positions=active_pos_map)
+                
                     snapshot = get_feature_snapshot(candles)
-                    account_state = AccountState(available_margin=500000.0, unrealized_pnl=0.0, realized_pnl=0.0)
                 
                     # Extract the actual timestamp of the latest market data tick/candle
                     latest_candle_time = None
@@ -597,6 +624,10 @@ async def simulate_trades_stream():
                         candidate_trade = None
                         order = None
                         msg = "Emergency stop active"
+                    elif existing_pos:
+                        candidate_trade = None
+                        order = None
+                        msg = f"Position already active for {clean_sym}"
                     elif mkt_status in ["CLOSED", "STALE"] and settings.TRADING_MODE != "DRY_RUN":
                         candidate_trade = None
                         order = None
@@ -605,7 +636,7 @@ async def simulate_trades_stream():
                         pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager, position_sizer)
                         candidate_trade, order, msg = await asyncio.to_thread(
                             pipeline.process_tick,
-                            symbol=display_symbols[sym],
+                            symbol=clean_sym,
                             candles=candles,
                             market_snapshot=snapshot,
                             indicators=snapshot,
@@ -626,7 +657,7 @@ async def simulate_trades_stream():
 
                     # Append to watchlist payload
                     watchlist_payload.append({
-                        "symbol": display_symbols[sym],
+                        "symbol": clean_sym,
                         "ltp": current_price,
                         "prev_close": prev_close,
                         "change": change,
@@ -653,9 +684,42 @@ async def simulate_trades_stream():
                                 trailing_sl_pct=0.015,
                                 broker_order_id=order.broker_order_id
                             )
+                            exec_dict = {
+                                "id": trade_id,
+                                "symbol": candidate_trade.symbol,
+                                "action": candidate_trade.direction.name,
+                                "reasoning": candidate_trade.reasoning,
+                                "price": candidate_trade.entry_price,
+                                "stop_loss": candidate_trade.stop_loss,
+                                "take_target": candidate_trade.take_target,
+                                "qty": candidate_trade.qty,
+                                "allocated_capital": candidate_trade.allocated_capital,
+                                "risk_budget": candidate_trade.risk_budget,
+                                "risk_pct": candidate_trade.risk_pct,
+                                "sizing_rationale": candidate_trade.sizing_rationale,
+                                "broker_order_id": order.broker_order_id,
+                                "status": "AUTONOMOUSLY_EXECUTED",
+                                "timestamp": datetime.now().strftime("%H:%M:%S")
+                            }
+                            autonomous_trades_history.insert(0, exec_dict)
+                            if len(autonomous_trades_history) > 30:
+                                autonomous_trades_history.pop()
+
+                            if active_connections:
+                                for connection in active_connections:
+                                    try:
+                                        await connection.send_text(json.dumps({
+                                            "type": "autonomous_trade",
+                                            "trade": exec_dict
+                                        }))
+                                    except Exception:
+                                        pass
+
                             notify_state_changed()
+                        elif not candidate_trade.approval_required:
+                            log_audit_event("RISK_DECISION", trade_id, candidate_trade.symbol, "REJECT", f"Risk Engine Blocked Auto-Execution: {msg}")
                         else:
-                            # Avoid spamming duplicate candidate trades for the same symbol
+                            # Fallback if manual approval is ever enabled
                             already_pending = any(c.get("symbol") == candidate_trade.symbol for c in candidate_cache.values())
                             if not already_pending:
                                 cand_dict = {
@@ -1017,7 +1081,8 @@ def toggle_emergency_stop():
 def get_system_status():
     return {
         "emergency_stop_active": EMERGENCY_STOP_ACTIVE,
-        "trading_mode": settings.TRADING_MODE
+        "trading_mode": settings.TRADING_MODE,
+        "autonomous_execution": settings.AUTONOMOUS_EXECUTION
     }
 
 

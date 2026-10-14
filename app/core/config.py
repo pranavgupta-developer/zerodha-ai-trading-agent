@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     TRADING_SYMBOLS: str = "RELIANCE.NS,TCS.NS,INFY.NS,HDFCBANK.NS,ICICIBANK.NS"
 
     # Execution autonomy (True: auto-execute; False: require human approval on dashboard)
-    AUTONOMOUS_EXECUTION: bool = False
+    AUTONOMOUS_EXECUTION: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

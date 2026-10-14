@@ -61,6 +61,10 @@ class PositionManager:
     def __init__(self, broker: Optional[BrokerAdapter] = None):
         self.broker = broker
         self._positions: Dict[str, TrackedPosition] = {}
+        self.closed_positions: List[ExitEvent] = []
+
+    def get_realized_pnl(self) -> float:
+        return sum(e.pnl for e in self.closed_positions)
 
     def register_position(
         self,
@@ -283,6 +287,7 @@ class PositionManager:
 
         event.broker_order_id = broker_order_id
         pos.is_active = False
+        self.closed_positions.append(event)
         return event
 
     def manual_square_off(self, symbol: str, current_price: float = 0.0) -> Optional[ExitEvent]:
@@ -336,5 +341,6 @@ class PositionManager:
             pnl_pct=round(pnl_pct, 2),
             broker_order_id=broker_order_id,
         )
+        self.closed_positions.append(event)
         logger.info(f"Manual square off completed for {clean_symbol}. Order: {broker_order_id}")
         return event
