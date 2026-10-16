@@ -17,7 +17,8 @@ function updatePnlSummary(realized = null, unrealized = null) {
     if (realized !== null && !isNaN(realized)) currentRealizedPnl = Number(realized);
     if (unrealized !== null && !isNaN(unrealized)) currentUnrealizedPnl = Number(unrealized);
 
-    const totalDayProfit = currentRealizedPnl + currentUnrealizedPnl;
+    // Overall Day Profit represents value already gained by Buying and Selling of stocks (Realized)
+    const totalDayProfit = currentRealizedPnl;
 
     const totalDayEl = document.getElementById('total-day-pnl-val');
     if (totalDayEl) {
@@ -241,6 +242,49 @@ function handleMarketUpdate(data) {
     if (data.emergency_stop_active !== undefined) {
         updateEmergencyStopUI(data.emergency_stop_active);
     }
+
+    if (data.reconciliation) {
+        const banner = document.getElementById('reconciliation-alert-banner');
+        if (banner) {
+            if (!data.reconciliation.is_synced && data.reconciliation.discrepancies > 0) {
+                banner.style.display = 'block';
+                const msgEl = document.getElementById('reconcile-discrepancy-msg');
+                if (msgEl) msgEl.textContent = `(${data.reconciliation.discrepancies} mismatches detected)`;
+            } else {
+                banner.style.display = 'none';
+            }
+        }
+    }
+
+    if (data.ml_metrics) {
+        const mlAccEl = document.getElementById('ml-accuracy-val');
+        if (mlAccEl) {
+            const accPct = (data.ml_metrics.rolling_accuracy_20 * 100).toFixed(1);
+            mlAccEl.textContent = data.ml_metrics.total_predictions > 0 ? `${accPct}%` : '--%';
+        }
+        const driftBadge = document.getElementById('ml-drift-badge');
+        if (driftBadge) {
+            if (data.ml_metrics.drift_detected) {
+                driftBadge.textContent = '⚠️ DRIFT DETECTED';
+                driftBadge.style.color = '#ef4444';
+            } else {
+                driftBadge.textContent = 'Drift: STABLE';
+                driftBadge.style.color = '#10b981';
+            }
+        }
+    }
+
+    if (data.paper_validation) {
+        const verdictEl = document.getElementById('paper-verdict-val');
+        if (verdictEl) {
+            verdictEl.textContent = data.paper_validation.verdict || 'IN PROGRESS';
+            verdictEl.className = `value ${data.paper_validation.verdict === 'PASSED' ? 'positive' : ''}`;
+        }
+        const sharpeEl = document.getElementById('paper-sharpe-val');
+        if (sharpeEl) {
+            sharpeEl.textContent = `Sharpe: ${data.paper_validation.sharpe_ratio} | Day ${data.paper_validation.days_completed}`;
+        }
+    }
     
     window.current_backend_ts = data.backend_ts;
     
@@ -445,6 +489,31 @@ async function toggleEmergencyStop() {
     }
 }
 
+async function triggerManualReconciliation() {
+    const btn = document.getElementById('btn-reconcile');
+    if (btn) btn.textContent = '🔄 Reconciling...';
+    try {
+        const response = await fetch('/api/v1/system/reconcile', { method: 'POST' });
+        const data = await response.json();
+        const banner = document.getElementById('reconciliation-alert-banner');
+        if (data.report && !data.report.is_synced && data.report.total_discrepancies > 0) {
+            if (banner) {
+                banner.style.display = 'block';
+                const msgEl = document.getElementById('reconcile-discrepancy-msg');
+                if (msgEl) msgEl.textContent = `(${data.report.total_discrepancies} mismatches detected - auto-synced: ${data.report.auto_resolved})`;
+            }
+        } else {
+            if (banner) banner.style.display = 'none';
+        }
+        if (btn) btn.textContent = '✅ Synced';
+        setTimeout(() => { if (btn) btn.textContent = '🔄 Reconcile Now'; }, 2000);
+    } catch (e) {
+        console.error('Failed to trigger reconciliation:', e);
+        if (btn) btn.textContent = '❌ Failed';
+        setTimeout(() => { if (btn) btn.textContent = '🔄 Reconcile Now'; }, 2000);
+    }
+}
+
 function updateEmergencyStopUI(isActive) {
     const btn = document.getElementById('btn-emergency-stop');
     if (!btn) return;
@@ -457,8 +526,27 @@ function updateEmergencyStopUI(isActive) {
         btn.innerHTML = '🚨 EMERGENCY STOP';
         btn.style.backgroundColor = 'var(--negative)';
         btn.style.color = '#fff';
-        btn.style.border = 'none';
     }
+}
+
+async function showPaperReportModal() {
+    const modal = document.getElementById('paper-report-modal');
+    const content = document.getElementById('paper-report-content');
+    if (modal) modal.style.display = 'flex';
+    if (content) content.textContent = 'Generating validation report...';
+    
+    try {
+        const res = await fetch('/api/v1/system/paper-report/markdown');
+        const data = await res.json();
+        if (content) content.textContent = data.markdown || 'No report available.';
+    } catch (e) {
+        if (content) content.textContent = 'Failed to load report: ' + e;
+    }
+}
+
+function closePaperReportModal() {
+    const modal = document.getElementById('paper-report-modal');
+    if (modal) modal.style.display = 'none';
 }
 
 async function fetchSystemStatus() {

@@ -19,13 +19,18 @@ from app.trading.risk_engine import RiskEngine, RiskConfig, AccountState
 from app.trading.order_manager import OrderManager
 from app.trading.signals import Signal, SignalDirection
 from app.trading.position_manager import PositionManager, ExitReason
-from datetime import datetime
+from datetime import datetime, timezone
 from app.broker.ticker import MarketTicker
 
 from app.trading.pipeline import TradingPipeline
 from app.trading.strategy import EmaRsiVwapStrategy
 from app.agent.service import AgentService
 from app.trading.position_sizer import DynamicPositionSizer
+from app.trading.reconciliation import ReconciliationEngine, ReconciliationReport
+from app.security.anomaly_detector import AnomalyDetector
+from app.trading.ml_monitor import MLMonitor, PredictionRecord
+from app.trading.paper_report import PaperTradingJournal, DailySnapshot
+from dataclasses import asdict
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=[logging.StreamHandler(), logging.FileHandler("app.log")])
 logger = logging.getLogger(__name__)
 
@@ -376,9 +381,28 @@ def build_portfolio_payload() -> dict:
             "margin": global_available_margin,
             "realized_pnl": round(position_manager.get_realized_pnl(), 2),
             "unrealized_pnl": round(total_unrealized_pnl, 2),
-            "total_day_pnl": round(position_manager.get_realized_pnl() + total_unrealized_pnl, 2)
+            "total_day_pnl": round(position_manager.get_realized_pnl(), 2),
+            "net_day_pnl": round(position_manager.get_realized_pnl() + total_unrealized_pnl, 2)
         },
         "emergency_stop_active": EMERGENCY_STOP_ACTIVE,
+        "reconciliation": {
+            "is_synced": reconciliation_engine.latest_report.is_synced if reconciliation_engine.latest_report else True,
+            "discrepancies": reconciliation_engine.latest_report.total_discrepancies if reconciliation_engine.latest_report else 0,
+            "critical_count": reconciliation_engine.latest_report.critical_count if reconciliation_engine.latest_report else 0
+        },
+        "ml_metrics": {
+            "overall_accuracy": ml_monitor.get_metrics_summary().get("overall_accuracy", 0.0),
+            "rolling_accuracy_20": ml_monitor.calculate_rolling_accuracy(20),
+            "total_predictions": len(ml_monitor.records),
+            "drift_detected": ml_monitor.detect_prediction_drift().get("drift_detected", False)
+        },
+        "paper_validation": {
+            "verdict": paper_journal.calculate_metrics().get("validation_verdict", "IN_PROGRESS"),
+            "days_completed": paper_journal.calculate_metrics().get("days_completed", 0),
+            "sharpe_ratio": paper_journal.calculate_metrics().get("sharpe_ratio", 0.0),
+            "max_drawdown_pct": paper_journal.calculate_metrics().get("max_drawdown_pct", 0.0),
+            "net_pnl_after_fees": paper_journal.calculate_metrics().get("net_pnl_after_fees", 0.0)
+        },
         "backend_ts": time.time()
     }
 
@@ -409,7 +433,7 @@ async def portfolio_broadcast_loop():
 
 def log_audit_event(event_type: str, trade_id: str, symbol: str, action: str, details: str):
     db = SessionLocal()
-    iso_now = datetime.utcnow().isoformat()
+    iso_now = datetime.now(timezone.utc).isoformat()
     try:
         log = AuditLog(
             event_type=event_type,
@@ -417,7 +441,7 @@ def log_audit_event(event_type: str, trade_id: str, symbol: str, action: str, de
             symbol=symbol,
             action=action,
             details=details,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         db.add(log)
         db.commit()
@@ -589,6 +613,12 @@ async def simulate_trades_stream():
                     # Automated Position Exit check (Stop-Loss / Take-Profit / Trailing SL)
                     exit_event = position_manager.check_and_execute_exit(display_symbols[sym], current_price)
                     if exit_event:
+                        ml_monitor.record_outcome(
+                            symbol=exit_event.symbol,
+                            exit_price=exit_event.exit_price,
+                            realized_pnl=exit_event.pnl,
+                            exit_reason=exit_event.reason.value
+                        )
                         log_audit_event(
                             "POSITION_EXIT",
                             f"exit_{exit_event.symbol}",
@@ -633,7 +663,7 @@ async def simulate_trades_stream():
                         order = None
                         msg = f"Market is {mkt_status}"
                     else:
-                        pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager, position_sizer)
+                        pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager, position_sizer, anomaly_detector=anomaly_detector)
                         candidate_trade, order, msg = await asyncio.to_thread(
                             pipeline.process_tick,
                             symbol=clean_sym,
@@ -643,6 +673,10 @@ async def simulate_trades_stream():
                             account_state=account_state,
                             quote_data=quote_data
                         )
+                        if msg and msg.startswith("ANOMALY_HALT"):
+                            EMERGENCY_STOP_ACTIVE = True
+                            log_audit_event("ANOMALY_HALT", f"anom_{clean_sym}", clean_sym, "HALT", msg)
+                            notify_state_changed()
                 
                     signal_str = candidate_trade.direction.name if candidate_trade else "HOLD"
                     if candidate_trade and candidate_trade.direction == SignalDirection.HOLD:
@@ -674,6 +708,15 @@ async def simulate_trades_stream():
                         if order:
                             # Trade was autonomously executed by the pipeline
                             log_audit_event("ORDER_EVENT", trade_id, candidate_trade.symbol, "AUTONOMOUS", f"Broker ID: {order.broker_order_id} | {msg}")
+                            ml_monitor.record_prediction(
+                                symbol=candidate_trade.symbol,
+                                predicted_direction=candidate_trade.direction.name,
+                                confidence=candidate_trade.confidence_score,
+                                entry_price=candidate_trade.entry_price,
+                                features=snapshot or {},
+                                market_regime=MLMonitor.classify_regime(snapshot or {}, candidate_trade.entry_price),
+                                trade_id=trade_id
+                            )
                             position_manager.register_position(
                                 symbol=candidate_trade.symbol,
                                 direction=candidate_trade.direction,
@@ -762,6 +805,26 @@ async def simulate_trades_stream():
             
         await asyncio.sleep(1.0) # Non-blocking poll every 0.1 seconds
 
+async def periodic_reconciliation_loop():
+    while True:
+        try:
+            await asyncio.sleep(60.0)
+            report = await asyncio.to_thread(reconciliation_engine.run_reconciliation, True)
+            if not report.is_synced:
+                logger.warning(f"[RECONCILIATION] Discrepancies detected: {report.total_discrepancies}")
+                log_audit_event(
+                    "RECONCILIATION_ALERT",
+                    f"rec_{int(report.timestamp)}",
+                    "PORTFOLIO",
+                    "MISMATCH",
+                    f"Auto-audit found {report.total_discrepancies} mismatches ({report.critical_count} critical). Auto-synced: {report.auto_resolved}"
+                )
+                notify_state_changed()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in periodic reconciliation loop: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize DB tables
@@ -769,6 +832,7 @@ async def lifespan(app: FastAPI):
     
     # Recover state
     order_manager.recover_state()
+    position_manager.recover_state()
     
     global global_holdings, global_positions, global_available_margin, market_ticker
     try:
@@ -789,9 +853,11 @@ async def lifespan(app: FastAPI):
     
     task = asyncio.create_task(simulate_trades_stream())
     broadcast_task = asyncio.create_task(portfolio_broadcast_loop())
+    reconcile_task = asyncio.create_task(periodic_reconciliation_loop())
     yield
     task.cancel()
     broadcast_task.cancel()
+    reconcile_task.cancel()
     if market_ticker:
         market_ticker.stop()
     
@@ -809,6 +875,11 @@ risk_engine = RiskEngine(config=RiskConfig(check_market_hours=False))
 order_manager = OrderManager(broker)
 position_manager = PositionManager(broker=broker)
 position_sizer = DynamicPositionSizer()
+reconciliation_engine = ReconciliationEngine(broker=broker, position_manager=position_manager, order_manager=order_manager)
+anomaly_detector = AnomalyDetector()
+ml_monitor = MLMonitor()
+paper_journal = PaperTradingJournal()
+recent_order_timestamps: list[float] = []
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -999,9 +1070,31 @@ def handle_trade_action(action: TradeActionReq):
             
         log_audit_event("RISK_DECISION", action.trade_id, symbol, "APPROVE", "Risk Engine Approved")
         
+        # Anomaly Detection Safeguard
+        opm = float(len([t for t in recent_order_timestamps if time.time() - t <= 60.0]))
+        order_val = float(qty * signal.entry_price)
+        order_pct = min(1.0, order_val / max(effective_margin, 1000.0))
+        curr_val = float(account.open_positions.get(symbol, 0.0))
+        conc_pct = min(1.0, (curr_val + order_val) / max(effective_margin, 1000.0))
+        anom = anomaly_detector.evaluate(opm, order_pct, conc_pct, signal.confidence, 150.0)
+        if anom.get("halt_trading"):
+            EMERGENCY_STOP_ACTIVE = True
+            log_audit_event("ANOMALY_HALT", action.trade_id, symbol, "HALT", f"Manual approval halted by AnomalyDetector (score: {anom.get('anomaly_score', 0):.4f})")
+            notify_state_changed()
+            raise HTTPException(status_code=400, detail="CRITICAL ANOMALY: Order blocked and Emergency Stop engaged.")
+
         try:
             order = order_manager.place_order(signal, qty)
+            recent_order_timestamps.append(time.time())
             logger.info(f"Order placed successfully: {order.broker_order_id}")
+            ml_monitor.record_prediction(
+                symbol=symbol,
+                predicted_direction=direction.name,
+                confidence=signal.confidence,
+                entry_price=signal.entry_price,
+                features={"rsi_14": 50.0, "atr_14": 0.0},
+                trade_id=action.trade_id
+            )
             position_manager.register_position(
                 symbol=symbol,
                 direction=direction,
@@ -1027,6 +1120,14 @@ def close_trade_position(req: TradeCloseReq):
     try:
         current_ltp = price_cache.get_by_symbol(symbol, 0.0)
         event = position_manager.manual_square_off(symbol, current_price=current_ltp)
+        if event:
+            ml_monitor.record_outcome(
+                symbol=symbol,
+                exit_price=event.exit_price,
+                realized_pnl=event.pnl,
+                exit_reason=event.reason.value,
+                trade_id=f"close_{symbol}"
+            )
         broker_order_id = event.broker_order_id if event else None
         logger.info(f"Closing position manually for {symbol}: order={broker_order_id}")
         log_audit_event(
@@ -1052,6 +1153,12 @@ def close_all_trade_positions():
             current_ltp = price_cache.get_by_symbol(pos.symbol, 0.0)
             event = position_manager.manual_square_off(pos.symbol, current_price=current_ltp)
             if event:
+                ml_monitor.record_outcome(
+                    symbol=pos.symbol,
+                    exit_price=event.exit_price,
+                    realized_pnl=event.pnl,
+                    exit_reason=event.reason.value
+                )
                 closed.append({
                     "symbol": pos.symbol,
                     "broker_order_id": event.broker_order_id,
@@ -1084,6 +1191,150 @@ def get_system_status():
         "trading_mode": settings.TRADING_MODE,
         "autonomous_execution": settings.AUTONOMOUS_EXECUTION
     }
+
+@app.post("/api/v1/system/reconcile")
+def run_manual_reconciliation():
+    """Manually triggers an independent audit and reconciliation against Zerodha broker state."""
+    report = reconciliation_engine.run_reconciliation(auto_sync=True)
+    if not report.is_synced:
+        log_audit_event(
+            "RECONCILIATION_ALERT",
+            f"rec_{int(report.timestamp)}",
+            "PORTFOLIO",
+            "MISMATCH",
+            f"Manual audit found {report.total_discrepancies} mismatches ({report.critical_count} critical). Auto-synced: {report.auto_resolved}"
+        )
+    notify_state_changed()
+    return {
+        "status": "success",
+        "report": report.model_dump()
+    }
+
+@app.get("/api/v1/system/reconciliation/status")
+def get_reconciliation_status():
+    """Fetches the latest reconciliation report and quarantined count."""
+    report = reconciliation_engine.latest_report
+    if not report:
+        report = reconciliation_engine.run_reconciliation(auto_sync=False)
+    return {
+        "report": report.model_dump(),
+        "quarantined_count": len(reconciliation_engine.quarantined_payloads)
+    }
+
+@app.get("/api/v1/system/anomaly/status")
+def get_anomaly_status():
+    """Returns anomaly detector state and current runtime risk metrics."""
+    opm = len([t for t in recent_order_timestamps if time.time() - t <= 60.0])
+    return {
+        "is_fitted": anomaly_detector.is_fitted,
+        "current_orders_per_minute": opm,
+        "emergency_stop_active": EMERGENCY_STOP_ACTIVE
+    }
+
+# ==========================================
+# ML Performance & Feedback Monitoring Endpoints
+# ==========================================
+
+class ManualPredictionReq(BaseModel):
+    symbol: str
+    predicted_direction: str
+    confidence: float
+    entry_price: float
+    features: Optional[dict] = None
+    market_regime: Optional[str] = None
+    trade_id: Optional[str] = None
+
+class ManualOutcomeReq(BaseModel):
+    symbol: str
+    exit_price: float
+    realized_pnl: float
+    exit_reason: str
+    trade_id: Optional[str] = None
+
+@app.get("/api/v1/ml/metrics")
+def get_ml_metrics():
+    """Returns comprehensive ML performance metrics, rolling accuracy, calibration and drift."""
+    return ml_monitor.get_metrics_summary()
+
+@app.get("/api/v1/ml/predictions")
+def get_ml_predictions(limit: int = 50):
+    """Returns recent prediction records with linked execution outcomes."""
+    return [asdict(r) for r in ml_monitor.records[-limit:]]
+
+@app.post("/api/v1/ml/record")
+def record_manual_prediction(req: ManualPredictionReq):
+    rec = ml_monitor.record_prediction(
+        symbol=req.symbol,
+        predicted_direction=req.predicted_direction,
+        confidence=req.confidence,
+        entry_price=req.entry_price,
+        features=req.features or {},
+        market_regime=req.market_regime,
+        trade_id=req.trade_id
+    )
+    return {"status": "success", "prediction": asdict(rec)}
+
+@app.post("/api/v1/ml/outcome")
+def record_manual_outcome(req: ManualOutcomeReq):
+    rec = ml_monitor.record_outcome(
+        symbol=req.symbol,
+        exit_price=req.exit_price,
+        realized_pnl=req.realized_pnl,
+        exit_reason=req.exit_reason,
+        trade_id=req.trade_id
+    )
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"No pending prediction found for symbol {req.symbol}")
+    return {"status": "success", "outcome": asdict(rec)}
+
+# ==========================================
+# 3-7 Day Paper Trading Validation Endpoints
+# ==========================================
+
+class PaperSnapshotReq(BaseModel):
+    starting_margin: float
+    ending_margin: float
+    realized_pnl: float
+    unrealized_pnl: float = 0.0
+    total_trades: int = 0
+    win_trades: int = 0
+    loss_trades: int = 0
+    date_str: Optional[str] = None
+    brokerage_per_order: float = 20.0
+    avg_latency_ms: float = 120.0
+
+@app.get("/api/v1/system/paper-report")
+def get_paper_report():
+    """Returns multi-day paper trading journal metrics and historical daily snapshots."""
+    return {
+        "metrics": paper_journal.calculate_metrics(),
+        "snapshots": [asdict(s) for s in paper_journal.daily_snapshots]
+    }
+
+@app.get("/api/v1/system/paper-report/markdown")
+def get_paper_report_markdown():
+    """Generates formatted executive Markdown validation report."""
+    return {
+        "markdown": paper_journal.generate_markdown_report()
+    }
+
+@app.post("/api/v1/system/paper-report/snapshot")
+def record_paper_snapshot(req: PaperSnapshotReq):
+    snap = paper_journal.record_daily_snapshot(
+        starting_margin=req.starting_margin,
+        ending_margin=req.ending_margin,
+        realized_pnl=req.realized_pnl,
+        unrealized_pnl=req.unrealized_pnl,
+        total_trades=req.total_trades,
+        win_trades=req.win_trades,
+        loss_trades=req.loss_trades,
+        date_str=req.date_str,
+        brokerage_per_order=req.brokerage_per_order,
+        avg_latency_ms=req.avg_latency_ms
+    )
+    return {"status": "success", "snapshot": asdict(snap)}
+
+
 
 
 if __name__ == "__main__":

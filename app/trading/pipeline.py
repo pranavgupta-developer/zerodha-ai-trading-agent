@@ -21,13 +21,15 @@ class TradingPipeline:
         agent: AgentService, 
         risk_engine: RiskEngine, 
         order_manager: OrderManager,
-        position_sizer: Optional[DynamicPositionSizer] = None
+        position_sizer: Optional[DynamicPositionSizer] = None,
+        anomaly_detector: Optional[Any] = None
     ):
         self.strategy = strategy
         self.agent = agent
         self.risk_engine = risk_engine
         self.order_manager = order_manager
         self.position_sizer = position_sizer or DynamicPositionSizer()
+        self.anomaly_detector = anomaly_detector
 
     def process_tick(
         self, 
@@ -94,6 +96,26 @@ class TradingPipeline:
         is_approved, risk_reason = self.risk_engine.validate_signal(risk_signal, account_state, candidate_trade.qty, quote_data)
         if not is_approved:
             return candidate_trade, None, f"Risk Engine rejected trade: {risk_reason}"
+
+        # 3b. Runtime Anomaly Detection Check
+        if self.anomaly_detector:
+            opm = float(account_state.orders_placed_last_minute)
+            avail_margin = max(float(account_state.available_margin), 10000.0)
+            order_val = float(candidate_trade.qty * candidate_trade.entry_price)
+            order_pct = min(1.0, order_val / avail_margin)
+            curr_pos_val = float(account_state.open_positions.get(candidate_trade.symbol, 0.0))
+            conc_pct = min(1.0, (curr_pos_val + order_val) / avail_margin)
+            conf = float(candidate_trade.confidence_score)
+            
+            anomaly_res = self.anomaly_detector.evaluate(
+                orders_per_minute=opm,
+                order_value_pct=order_pct,
+                concentration_pct=conc_pct,
+                ai_confidence=conf,
+                data_lag_ms=150.0
+            )
+            if anomaly_res.get("halt_trading"):
+                return candidate_trade, None, f"ANOMALY_HALT: Critical anomaly detected (score {anomaly_res.get('anomaly_score', 0):.4f}). Auto-halting trading."
 
         # 4. Order Execution
         order = self.order_manager.place_order(risk_signal, candidate_trade.qty)

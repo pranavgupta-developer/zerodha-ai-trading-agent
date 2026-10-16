@@ -61,27 +61,6 @@ class EmaRsiVwapStrategy:
         bullish_cross = prev_fast <= prev_slow and curr_fast > curr_slow # type: ignore
         # Bearish Crossover (fast crosses below slow)
         bearish_cross = prev_fast >= prev_slow and curr_fast < curr_slow # type: ignore
-        
-        # MOCK FOR TESTING: Randomly generate a signal if in dry run and market is flat
-        import random
-        from app.core.config import settings
-        if settings.TRADING_MODE == "DRY_RUN" and random.random() < 0.10: # 10% chance
-            is_buy = random.random() > 0.5
-            if is_buy:
-                return Signal(
-                    symbol=symbol, direction=SignalDirection.BUY, confidence=0.8,
-                    entry_price=current_price, stop_loss=current_price - curr_atr * self.config.atr_stop_multiplier,
-                    take_target=current_price + (curr_atr * self.config.atr_stop_multiplier * self.config.risk_reward_ratio),
-                    reason="[TEST SIGNAL] Randomly generated for UI testing", strategy_version=self.version
-                )
-            else:
-                return Signal(
-                    symbol=symbol, direction=SignalDirection.SELL, confidence=0.8,
-                    entry_price=current_price, stop_loss=current_price + curr_atr * self.config.atr_stop_multiplier,
-                    take_target=current_price - (curr_atr * self.config.atr_stop_multiplier * self.config.risk_reward_ratio),
-                    reason="[TEST SIGNAL] Randomly generated for UI testing", strategy_version=self.version
-                )
-        
         direction = SignalDirection.HOLD
         reason = "No signal"
         

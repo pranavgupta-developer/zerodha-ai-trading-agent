@@ -73,9 +73,9 @@ export default function App() {
         const unrealized = (data.account_stats?.unrealized_pnl !== undefined) 
           ? Number(data.account_stats.unrealized_pnl) 
           : (holdingsPnl + posPnl);
-        const dayPnl = (data.account_stats?.total_day_pnl !== undefined)
-          ? Number(data.account_stats.total_day_pnl)
-          : (realized + unrealized);
+        
+        // Overall Day Profit shows value already gained by Buying and Selling of stocks (Realized)
+        const dayPnl = realized;
         setDayRealizedPnl(realized);
         setDayUnrealizedPnl(unrealized);
         setPnl(dayPnl);
@@ -122,9 +122,9 @@ export default function App() {
           const unrealized = (data.account_stats?.unrealized_pnl !== undefined) 
             ? Number(data.account_stats.unrealized_pnl) 
             : (holdingsPnl + posPnl);
-          const dayPnl = (data.account_stats?.total_day_pnl !== undefined)
-            ? Number(data.account_stats.total_day_pnl)
-            : (realized + unrealized);
+          
+          // Overall Day Profit shows value already gained by Buying and Selling of stocks (Realized)
+          const dayPnl = realized;
           setDayRealizedPnl(realized);
           setDayUnrealizedPnl(unrealized);
           setPnl(dayPnl);
@@ -332,7 +332,7 @@ export default function App() {
                 {pnl >= 0 ? '+' : ''}₹{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                Unrealized MTM: <span style={{ color: dayUnrealizedPnl >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>{dayUnrealizedPnl >= 0 ? '+' : ''}₹{dayUnrealizedPnl.toFixed(2)}</span> | Realized: <span style={{ color: '#fff', fontWeight: 600 }}>₹{dayRealizedPnl.toFixed(2)}</span>
+                Unrealized MTM: <span style={{ color: dayUnrealizedPnl >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>{dayUnrealizedPnl >= 0 ? '+' : ''}₹{dayUnrealizedPnl.toFixed(2)}</span> | Net Total: <span style={{ color: (dayRealizedPnl + dayUnrealizedPnl) >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>{(dayRealizedPnl + dayUnrealizedPnl) >= 0 ? '+' : ''}₹{(dayRealizedPnl + dayUnrealizedPnl).toFixed(2)}</span>
               </div>
             </div>
             

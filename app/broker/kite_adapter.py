@@ -184,7 +184,7 @@ class BrokerAdapter:
                 item["tradingsymbol"] = str(item.get("tradingsymbol", "")).replace(".NS", "").strip()
                 item["quantity"] = abs(int(item.get("quantity", 0)))
                 cleaned_net.append(item)
-            return {"net": cleaned_net, "day": raw_pos.get("day", [])}
+            return {"net": cleaned_net, "day": raw_pos.get("day", []), "realized_pnl": float(state.get("realized_pnl", 0.0))}
             
         self._ensure_authenticated()
         try:
@@ -279,6 +279,10 @@ class BrokerAdapter:
                         pos["quantity"] = new_qty
                     else:
                         # SELL decreases holding down to 0, never negative
+                        sold_qty = min(curr_qty, quantity)
+                        if sold_qty > 0 and price > 0 and curr_avg > 0:
+                            pnl_gain = round((price - curr_avg) * sold_qty, 2)
+                            state["realized_pnl"] = round(float(state.get("realized_pnl", 0.0)) + pnl_gain, 2)
                         pos["quantity"] = max(0, curr_qty - quantity)
                     break
             if not found:

@@ -1,0 +1,21 @@
+{
+  "initial_capital": 500000.0,
+  "snapshots": [
+    {
+      "date_str": "2026-10-15",
+      "starting_margin": 500000.0,
+      "ending_margin": 504000.0,
+      "realized_pnl": 4500.0,
+      "unrealized_pnl": -500.0,
+      "net_pnl": 4000.0,
+      "daily_return_pct": 0.8,
+      "total_trades": 8,
+      "win_trades": 6,
+      "loss_trades": 2,
+      "win_rate": 75.0,
+      "brokerage_fees": 280.0,
+      "net_after_fees": 3720.0,
+      "avg_latency_ms": 120.0
+    }
+  ]
+}

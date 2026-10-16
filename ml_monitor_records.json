@@ -1,0 +1,170 @@
+[
+  {
+    "prediction_id": "pred_TATASTEEL_1792166576_0",
+    "symbol": "TATASTEEL",
+    "predicted_direction": "BUY",
+    "confidence": 0.9,
+    "entry_price": 150.0,
+    "timestamp": "2026-10-16T16:02:56.456209+00:00",
+    "features": {
+      "rsi_14": 50.0,
+      "atr_14": 0.0
+    },
+    "market_regime": "SIDEWAYS",
+    "status": "COMPLETED",
+    "trade_id": "test_trade_approve_1",
+    "exit_price": 173.3,
+    "realized_pnl": 233.0,
+    "realized_pnl_pct": 155.33,
+    "exit_reason": "MANUAL_SQUARE_OFF",
+    "is_correct": true,
+    "exit_timestamp": "2026-10-16T16:02:56.534061+00:00"
+  },
+  {
+    "prediction_id": "pred_TCS_1792166576_1",
+    "symbol": "TCS",
+    "predicted_direction": "BUY",
+    "confidence": 0.88,
+    "entry_price": 3500.0,
+    "timestamp": "2026-10-16T16:02:56.577699+00:00",
+    "features": {
+      "rsi_14": 58.0,
+      "atr_14": 20.0
+    },
+    "market_regime": "BULLISH_TREND",
+    "status": "COMPLETED",
+    "trade_id": "test_e2e_ml_1",
+    "exit_price": 3550.0,
+    "realized_pnl": 500.0,
+    "realized_pnl_pct": 14.29,
+    "exit_reason": "TAKE_PROFIT",
+    "is_correct": true,
+    "exit_timestamp": "2026-10-16T16:02:56.580690+00:00"
+  },
+  {
+    "prediction_id": "pred_TATASTEEL_1792166719_2",
+    "symbol": "TATASTEEL",
+    "predicted_direction": "BUY",
+    "confidence": 0.9,
+    "entry_price": 150.0,
+    "timestamp": "2026-10-16T16:05:19.341978+00:00",
+    "features": {
+      "rsi_14": 50.0,
+      "atr_14": 0.0
+    },
+    "market_regime": "SIDEWAYS",
+    "status": "COMPLETED",
+    "trade_id": "test_trade_approve_1",
+    "exit_price": 173.3,
+    "realized_pnl": 233.0,
+    "realized_pnl_pct": 155.33,
+    "exit_reason": "MANUAL_SQUARE_OFF",
+    "is_correct": true,
+    "exit_timestamp": "2026-10-16T16:05:19.423781+00:00"
+  },
+  {
+    "prediction_id": "pred_TCS_1792166719_3",
+    "symbol": "TCS",
+    "predicted_direction": "BUY",
+    "confidence": 0.88,
+    "entry_price": 3500.0,
+    "timestamp": "2026-10-16T16:05:19.488749+00:00",
+    "features": {
+      "rsi_14": 58.0,
+      "atr_14": 20.0
+    },
+    "market_regime": "BULLISH_TREND",
+    "status": "COMPLETED",
+    "trade_id": "test_e2e_ml_1",
+    "exit_price": 3550.0,
+    "realized_pnl": 500.0,
+    "realized_pnl_pct": 14.29,
+    "exit_reason": "TAKE_PROFIT",
+    "is_correct": true,
+    "exit_timestamp": "2026-10-16T16:05:19.490593+00:00"
+  },
+  {
+    "prediction_id": "pred_TATASTEEL_1792166753_4",
+    "symbol": "TATASTEEL",
+    "predicted_direction": "BUY",
+    "confidence": 0.9,
+    "entry_price": 150.0,
+    "timestamp": "2026-10-16T16:05:53.123911+00:00",
+    "features": {
+      "rsi_14": 50.0,
+      "atr_14": 0.0
+    },
+    "market_regime": "SIDEWAYS",
+    "status": "COMPLETED",
+    "trade_id": "test_trade_approve_1",
+    "exit_price": 173.3,
+    "realized_pnl": 233.0,
+    "realized_pnl_pct": 155.33,
+    "exit_reason": "MANUAL_SQUARE_OFF",
+    "is_correct": true,
+    "exit_timestamp": "2026-10-16T16:05:53.199328+00:00"
+  },
+  {
+    "prediction_id": "pred_TCS_1792166753_5",
+    "symbol": "TCS",
+    "predicted_direction": "BUY",
+    "confidence": 0.88,
+    "entry_price": 3500.0,
+    "timestamp": "2026-10-16T16:05:53.337832+00:00",
+    "features": {
+      "rsi_14": 58.0,
+      "atr_14": 20.0
+    },
+    "market_regime": "BULLISH_TREND",
+    "status": "COMPLETED",
+    "trade_id": "test_e2e_ml_1",
+    "exit_price": 3550.0,
+    "realized_pnl": 500.0,
+    "realized_pnl_pct": 14.29,
+    "exit_reason": "TAKE_PROFIT",
+    "is_correct": true,
+    "exit_timestamp": "2026-10-16T16:05:53.338745+00:00"
+  },
+  {
+    "prediction_id": "pred_TATASTEEL_1792166815_6",
+    "symbol": "TATASTEEL",
+    "predicted_direction": "BUY",
+    "confidence": 0.9,
+    "entry_price": 150.0,
+    "timestamp": "2026-10-16T16:06:55.562013+00:00",
+    "features": {
+      "rsi_14": 50.0,
+      "atr_14": 0.0
+    },
+    "market_regime": "SIDEWAYS",
+    "status": "COMPLETED",
+    "trade_id": "test_trade_approve_1",
+    "exit_price": 173.3,
+    "realized_pnl": 233.0,
+    "realized_pnl_pct": 155.33,
+    "exit_reason": "MANUAL_SQUARE_OFF",
+    "is_correct": true,
+    "exit_timestamp": "2026-10-16T16:06:55.640250+00:00"
+  },
+  {
+    "prediction_id": "pred_TCS_1792166815_7",
+    "symbol": "TCS",
+    "predicted_direction": "BUY",
+    "confidence": 0.88,
+    "entry_price": 3500.0,
+    "timestamp": "2026-10-16T16:06:55.681664+00:00",
+    "features": {
+      "rsi_14": 58.0,
+      "atr_14": 20.0
+    },
+    "market_regime": "BULLISH_TREND",
+    "status": "COMPLETED",
+    "trade_id": "test_e2e_ml_1",
+    "exit_price": 3550.0,
+    "realized_pnl": 500.0,
+    "realized_pnl_pct": 14.29,
+    "exit_reason": "TAKE_PROFIT",
+    "is_correct": true,
+    "exit_timestamp": "2026-10-16T16:06:55.682755+00:00"
+  }
+]

@@ -64,7 +64,60 @@ class PositionManager:
         self.closed_positions: List[ExitEvent] = []
 
     def get_realized_pnl(self) -> float:
-        return sum(e.pnl for e in self.closed_positions)
+        total = sum(e.pnl for e in self.closed_positions)
+        if total == 0.0 and self.broker:
+            try:
+                pos_data = self.broker.get_positions()
+                if isinstance(pos_data, dict):
+                    if "realized_pnl" in pos_data and pos_data["realized_pnl"]:
+                        return float(pos_data["realized_pnl"])
+                    kite_realized = sum(float(p.get("realised", 0.0)) for p in pos_data.get("net", []) if "realised" in p)
+                    if kite_realized != 0.0:
+                        return kite_realized
+            except Exception:
+                pass
+        return total
+
+    def recover_state(self):
+        """
+        Recovers closed positions from the audit logs and broker state to restore realized PnL on server startup.
+        """
+        try:
+            import re
+            from datetime import datetime
+            from app.db.database import SessionLocal
+            from app.db.models import AuditLog
+
+            db = SessionLocal()
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            logs = db.query(AuditLog).filter(
+                AuditLog.event_type == "POSITION_EXIT",
+                AuditLog.timestamp >= today_start
+            ).all()
+
+            pnl_pattern = re.compile(r"P&L:\s*₹?(-?[\d\.]+)")
+            recovered_count = 0
+            for log in logs:
+                match = pnl_pattern.search(log.details or "")
+                if match:
+                    try:
+                        pnl_val = float(match.group(1))
+                        self.closed_positions.append(ExitEvent(
+                            symbol=log.symbol,
+                            reason=ExitReason.MANUAL_SQUARE_OFF,
+                            exit_price=0.0,
+                            quantity=1,
+                            pnl=pnl_val,
+                            pnl_pct=0.0,
+                            timestamp=log.timestamp.timestamp()
+                        ))
+                        recovered_count += 1
+                    except Exception:
+                        pass
+            db.close()
+            logger.info(f"PositionManager recovered {recovered_count} closed positions (Realized P&L: ₹{self.get_realized_pnl():.2f}).")
+        except Exception as e:
+            logger.debug(f"PositionManager state recovery skipped: {e}")
 
     def register_position(
         self,
