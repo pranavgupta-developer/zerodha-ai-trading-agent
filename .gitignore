@@ -5,11 +5,13 @@ __pycache__/
 
 # Environment Variables
 .env
+.kite_session
 
 # Databases & Logs
 *.log
 trading_agent.db*
 dry_run_state.json
+audit.jsonl
 
 # React / Node.js (Dashboard)
 dashboard/node_modules/

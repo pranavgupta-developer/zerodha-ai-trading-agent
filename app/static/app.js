@@ -286,6 +286,35 @@ function handleMarketUpdate(data) {
         }
     }
     
+    if (data.audit_chain) {
+        const badge = document.getElementById('audit-chain-badge');
+        if (badge) {
+            if (data.audit_chain.is_valid) {
+                badge.textContent = `🔒 SHA-256 Chain Verified (${data.audit_chain.last_hash})`;
+                badge.style.color = '#10b981';
+                badge.style.borderColor = '#10b981';
+                badge.style.background = 'rgba(16, 185, 129, 0.2)';
+            } else {
+                badge.textContent = '⚠️ Chain Tamper Detected';
+                badge.style.color = '#ef4444';
+                badge.style.borderColor = '#ef4444';
+                badge.style.background = 'rgba(239, 68, 68, 0.2)';
+            }
+        }
+    }
+    
+    if (data.risk_metrics) {
+        updateRiskMetricsUI(data.risk_metrics);
+    }
+    
+    if (data.model_status) {
+        updateModelRegistryUI(data.model_status);
+    }
+
+    if (data.unified_risk) {
+        updateUnifiedRiskUI(data.unified_risk);
+    }
+    
     window.current_backend_ts = data.backend_ts;
     
     if (data.autonomous_trades && Array.isArray(data.autonomous_trades)) {
@@ -297,6 +326,7 @@ function handleMarketUpdate(data) {
     renderHoldings();
     updateTime();
 }
+
 
 function appendAuditLog(log) {
     const tbody = document.querySelector('#audit-log-table tbody');
@@ -315,13 +345,15 @@ function appendAuditLog(log) {
     else if (log.event_type === 'ORDER_EVENT') eventTypeClass = 'style="color: var(--positive);"';
     else if (log.event_type === 'USER_DECISION') eventTypeClass = 'style="color: var(--text-main);"';
 
+    const hashStr = log.chain_hash ? `<div style="font-size: 0.65rem; color: #6b7280; font-family: monospace; margin-top: 3px;">🔗 SHA-256: ${log.chain_hash.substring(0, 16)}...</div>` : '';
+
     tr.innerHTML = `
         <td style="font-size: 0.75rem; color: var(--text-muted);">${date.toLocaleTimeString()}</td>
         <td ${eventTypeClass}>${log.event_type}</td>
         <td style="font-size: 0.75rem;">${log.trade_id || '-'}</td>
         <td style="font-weight: 600;">${log.symbol || '-'}</td>
         <td>${log.action || '-'}</td>
-        <td style="font-size: 0.8rem; color: var(--text-muted);">${log.details || '-'}</td>
+        <td style="font-size: 0.8rem; color: var(--text-muted);">${log.details || '-'}${hashStr}</td>
     `;
     tbody.insertBefore(tr, tbody.firstChild);
 }
@@ -549,6 +581,35 @@ function closePaperReportModal() {
     if (modal) modal.style.display = 'none';
 }
 
+async function verifyAuditChain() {
+    const badge = document.getElementById('audit-chain-badge');
+    if (badge) badge.textContent = '🔄 Verifying...';
+    try {
+        const res = await fetch('/api/v1/system/audit/verify');
+        const data = await res.json();
+        if (data.is_valid) {
+            if (badge) {
+                badge.textContent = `🔒 Verified (${data.total_events} blocks)`;
+                badge.style.color = '#10b981';
+                badge.style.borderColor = '#10b981';
+                badge.style.background = 'rgba(16, 185, 129, 0.2)';
+            }
+            alert(`AUDIT CHAIN INTEGRITY: 100% Cryptographically Verified.\nTotal Immutable Blocks: ${data.total_events}\nLatest Block Hash: ${data.last_hash}`);
+        } else {
+            if (badge) {
+                badge.textContent = `⚠️ Tamper Detected (L${data.tampered_at_line})`;
+                badge.style.color = '#ef4444';
+                badge.style.borderColor = '#ef4444';
+                badge.style.background = 'rgba(239, 68, 68, 0.2)';
+            }
+            alert(`CRITICAL AUDIT TAMPERING DETECTED!\n${data.message}`);
+        }
+    } catch (e) {
+        if (badge) badge.textContent = '⚠️ Verify Error';
+        console.error(e);
+    }
+}
+
 async function fetchSystemStatus() {
     try {
         const response = await fetch('/api/v1/system/status');
@@ -607,6 +668,443 @@ async function fetchAuditLogs() {
     }
 }
 
+// ==========================================
+// Institutional Risk & Sector UI
+// ==========================================
+
+function updateRiskMetricsUI(riskMetrics) {
+    if (!riskMetrics) return;
+    
+    const container = document.getElementById('sector-bars-container');
+    const compStatus = document.getElementById('sector-compliance-status');
+    const sectorBadge = document.getElementById('sector-risk-badge');
+    
+    if (riskMetrics.sectors && riskMetrics.sectors.sectors) {
+        const sectors = riskMetrics.sectors.sectors;
+        const keys = Object.keys(sectors);
+        const maxCapPct = (riskMetrics.max_sector_pct || 0.35) * 100;
+        
+        if (sectorBadge) {
+            sectorBadge.textContent = `Sector Cap: ${maxCapPct.toFixed(0)}% Max`;
+        }
+        
+        if (keys.length === 0) {
+            if (container) container.innerHTML = '<div style="font-size: 0.8rem; color: var(--text-muted);">No open positions. Capital fully diversified.</div>';
+            if (compStatus) {
+                compStatus.textContent = 'COMPLIANT';
+                compStatus.style.color = '#10b981';
+            }
+        } else {
+            let hasBreach = false;
+            let html = '';
+            keys.forEach(sec => {
+                const info = sectors[sec];
+                const pct = (info.pct * 100);
+                const isBreached = info.breached || pct > maxCapPct;
+                if (isBreached) hasBreach = true;
+                
+                const barColor = isBreached ? '#ef4444' : (pct > maxCapPct * 0.75 ? '#f59e0b' : '#10b981');
+                const barWidth = Math.min(100, Math.max(5, (pct / maxCapPct) * 100));
+                
+                html += `
+                    <div style="font-size: 0.8rem;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                            <span><strong style="color: white;">${sec}</strong> (${info.symbols.join(', ')})</span>
+                            <span style="color: ${barColor}; font-weight: 600;">${pct.toFixed(1)}% / ${maxCapPct.toFixed(0)}%</span>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.1); height: 6px; border-radius: 3px; overflow: hidden;">
+                            <div style="background: ${barColor}; width: ${barWidth}%; height: 100%; border-radius: 3px; transition: width 0.3s ease;"></div>
+                        </div>
+                    </div>
+                `;
+            });
+            if (container) container.innerHTML = html;
+            if (compStatus) {
+                if (hasBreach) {
+                    compStatus.textContent = 'CAP BREACHED';
+                    compStatus.style.color = '#ef4444';
+                } else {
+                    compStatus.textContent = 'COMPLIANT';
+                    compStatus.style.color = '#10b981';
+                }
+            }
+        }
+    }
+}
+
+async function fetchRiskVarMetrics() {
+    try {
+        const resp = await fetch('/api/v1/system/risk/var?confidence=0.95');
+        if (resp.ok) {
+            const data = await resp.json();
+            const paramVarEl = document.getElementById('param-var-val');
+            const paramCvarEl = document.getElementById('param-cvar-val');
+            const histVarEl = document.getElementById('hist-var-val');
+            const histCvarEl = document.getElementById('hist-cvar-val');
+            const badge = document.getElementById('var-risk-badge');
+            
+            if (paramVarEl && data.parametric) {
+                paramVarEl.textContent = `${(data.parametric.var_pct * 100).toFixed(2)}%`;
+            }
+            if (paramCvarEl && data.parametric) {
+                paramCvarEl.textContent = `${(data.parametric.cvar_pct * 100).toFixed(2)}%`;
+            }
+            if (histVarEl && data.historical) {
+                histVarEl.textContent = `${(data.historical.var_pct * 100).toFixed(2)}%`;
+            }
+            if (histCvarEl && data.historical) {
+                histCvarEl.textContent = `${(data.historical.cvar_pct * 100).toFixed(2)}%`;
+            }
+            if (badge) {
+                if (data.is_safe) {
+                    badge.textContent = `🛡️ 1-Day 95% VaR: Safe (< ${(data.max_var_pct * 100).toFixed(0)}%)`;
+                    badge.style.color = '#10b981';
+                    badge.style.borderColor = '#10b981';
+                    badge.style.background = 'rgba(16, 185, 129, 0.2)';
+                } else {
+                    badge.textContent = '⚠️ 1-Day VaR Limit Warning';
+                    badge.style.color = '#ef4444';
+                    badge.style.borderColor = '#ef4444';
+                    badge.style.background = 'rgba(239, 68, 68, 0.2)';
+                }
+            }
+        }
+    } catch (e) {
+        // silent fallback
+    }
+}
+
+async function fetchUnifiedRiskStatus() {
+    try {
+        const resp = await fetch('/api/v1/system/risk-center/status');
+        if (resp.ok) {
+            const json = await resp.json();
+            if (json.data) updateUnifiedRiskUI(json.data);
+        }
+    } catch (e) {}
+}
+
+async function fetchModelsStatus() {
+    try {
+        const resp = await fetch('/api/v1/system/models/status');
+        if (resp.ok) {
+            const json = await resp.json();
+            if (json.data) updateModelRegistryUI(json.data);
+        }
+    } catch (e) {}
+}
+
+function updateUnifiedRiskUI(riskData) {
+    if (!riskData) return;
+    const state = riskData.overall_state || 'SAFE';
+    
+    // Top Banner
+    const banner = document.getElementById('unified-risk-banner');
+    const badge = document.getElementById('risk-center-status-badge');
+    const summary = document.getElementById('risk-center-summary-text');
+    const resumeBtn = document.getElementById('btn-resume-system');
+    const statePill = document.getElementById('control-center-state-pill');
+
+    if (banner && badge && summary) {
+        summary.textContent = riskData.summary || '';
+        if (state === 'SAFE') {
+            banner.style.background = 'rgba(16, 185, 129, 0.12)';
+            banner.style.borderColor = '#10b981';
+            badge.style.background = '#10b981';
+            badge.style.color = '#111827';
+            badge.textContent = '🟢 SYSTEM SAFE';
+            if (resumeBtn) resumeBtn.style.display = 'none';
+        } else if (state === 'WARNING') {
+            banner.style.background = 'rgba(245, 158, 11, 0.15)';
+            banner.style.borderColor = '#f59e0b';
+            badge.style.background = '#f59e0b';
+            badge.style.color = '#111827';
+            badge.textContent = '🟡 SYSTEM WARNING';
+            if (resumeBtn) resumeBtn.style.display = 'none';
+        } else if (state === 'HALTED') {
+            banner.style.background = 'rgba(220, 38, 38, 0.25)';
+            banner.style.borderColor = '#dc2626';
+            badge.style.background = '#dc2626';
+            badge.style.color = '#ffffff';
+            badge.textContent = '🔴 SYSTEM HALTED';
+            if (resumeBtn) resumeBtn.style.display = 'inline-block';
+        }
+    }
+
+    if (statePill) {
+        statePill.textContent = `STATUS: ${state}`;
+        if (state === 'SAFE') {
+            statePill.style.color = '#10b981';
+            statePill.style.borderColor = '#10b981';
+            statePill.style.background = 'rgba(16, 185, 129, 0.2)';
+        } else if (state === 'WARNING') {
+            statePill.style.color = '#f59e0b';
+            statePill.style.borderColor = '#f59e0b';
+            statePill.style.background = 'rgba(245, 158, 11, 0.2)';
+        } else {
+            statePill.style.color = '#ef4444';
+            statePill.style.borderColor = '#ef4444';
+            statePill.style.background = 'rgba(239, 68, 68, 0.2)';
+        }
+    }
+
+    // Subsystems
+    const sub = riskData.subsystems || {};
+    
+    // 1. Audit Chain
+    if (sub.audit_chain) {
+        const auditStatusEl = document.getElementById('cc-audit-status');
+        const auditRecordsEl = document.getElementById('cc-audit-records');
+        if (auditStatusEl) {
+            auditStatusEl.textContent = sub.audit_chain.status;
+            auditStatusEl.style.color = sub.audit_chain.is_valid ? '#10b981' : '#ef4444';
+        }
+        if (auditRecordsEl) {
+            auditRecordsEl.textContent = `${sub.audit_chain.total_events || 0} events`;
+        }
+    }
+
+    // 2. Broker Sync
+    if (sub.reconciliation) {
+        const recStatusEl = document.getElementById('cc-reconcile-status');
+        const recDetailsEl = document.getElementById('cc-reconcile-details');
+        const quarEl = document.getElementById('cc-quarantine-count');
+        if (recStatusEl) {
+            recStatusEl.textContent = sub.reconciliation.status;
+            recStatusEl.style.color = sub.reconciliation.status === 'SYNCHRONIZED' ? '#10b981' : '#f59e0b';
+        }
+        if (recDetailsEl) {
+            recDetailsEl.textContent = `${sub.reconciliation.discrepancies || 0} Mismatches`;
+        }
+        if (quarEl) quarEl.textContent = sub.reconciliation.quarantined || 0;
+    }
+
+    // 3. Anomaly Sentinel
+    if (sub.anomaly_sentinel) {
+        const anomStatusEl = document.getElementById('cc-anomaly-status');
+        const anomDetailsEl = document.getElementById('cc-anomaly-details');
+        if (anomStatusEl) {
+            anomStatusEl.textContent = sub.anomaly_sentinel.status;
+            anomStatusEl.style.color = sub.anomaly_sentinel.is_halted ? '#ef4444' : (sub.anomaly_sentinel.warning_count > 0 ? '#f59e0b' : '#10b981');
+        }
+        if (anomDetailsEl) {
+            anomDetailsEl.textContent = `${sub.anomaly_sentinel.critical_count || 0} Critical`;
+        }
+    }
+
+    // 4. Portfolio Risk
+    if (sub.portfolio_risk) {
+        const portStatusEl = document.getElementById('cc-portfolio-status');
+        const portMaxSecEl = document.getElementById('cc-portfolio-max-sec');
+        if (portStatusEl) {
+            portStatusEl.textContent = sub.portfolio_risk.status;
+            portStatusEl.style.color = sub.portfolio_risk.status === 'COMPLIANT' ? '#10b981' : '#f59e0b';
+        }
+        if (portMaxSecEl) {
+            portMaxSecEl.textContent = `Max Sec: ${sub.portfolio_risk.max_sector_pct || 0}%`;
+        }
+    }
+
+    // 5. Model Registry
+    if (sub.model_registry) {
+        const modStatusEl = document.getElementById('cc-model-status');
+        const champAccEl = document.getElementById('cc-champ-acc');
+        const shadowLeadEl = document.getElementById('cc-shadow-delta');
+        if (modStatusEl) {
+            modStatusEl.textContent = sub.model_registry.status;
+            modStatusEl.style.color = sub.model_registry.status === 'ACTIVE' ? '#10b981' : '#f59e0b';
+        }
+        if (champAccEl) {
+            champAccEl.textContent = `Acc: ${(sub.model_registry.champion_accuracy || 0).toFixed(1)}%`;
+        }
+        if (shadowLeadEl) {
+            const delta = sub.model_registry.win_delta || 0;
+            shadowLeadEl.textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`;
+            shadowLeadEl.style.color = delta >= 5.0 ? '#10b981' : 'var(--text-muted)';
+        }
+    }
+
+    // 6. Kill Switch
+    if (sub.kill_switch) {
+        const killStatusEl = document.getElementById('cc-killswitch-status');
+        const killStateEl = document.getElementById('cc-killswitch-state');
+        if (killStatusEl) {
+            killStatusEl.textContent = sub.kill_switch.is_active ? 'ENGAGED' : 'ARMED';
+            killStatusEl.style.color = sub.kill_switch.is_active ? '#ef4444' : '#10b981';
+        }
+        if (killStateEl) {
+            killStateEl.textContent = sub.kill_switch.is_active ? 'HALTED' : 'STANDBY';
+            killStateEl.style.color = sub.kill_switch.is_active ? '#ef4444' : '#10b981';
+        }
+    }
+
+    // Reasons list
+    const reasonsContainer = document.getElementById('cc-reasons-container');
+    const reasonsList = document.getElementById('cc-reasons-list');
+    if (reasonsContainer && reasonsList) {
+        if (riskData.reasons && riskData.reasons.length > 0) {
+            reasonsContainer.style.display = 'block';
+            reasonsList.innerHTML = riskData.reasons.map(r => `<li>${r}</li>`).join('');
+        } else {
+            reasonsContainer.style.display = 'none';
+            reasonsList.innerHTML = '';
+        }
+    }
+}
+
+function updateModelRegistryUI(modelData) {
+    if (!modelData) return;
+    const champ = modelData.champion;
+    const chall = modelData.challenger;
+    const badge = document.getElementById('model-registry-badge');
+
+    if (champ) {
+        const nameEl = document.getElementById('champ-model-name');
+        const verEl = document.getElementById('champ-version-badge');
+        const accEl = document.getElementById('champ-acc-val');
+        const evalsEl = document.getElementById('champ-evals-val');
+        if (nameEl) nameEl.textContent = champ.name || champ.model_id;
+        if (verEl) verEl.textContent = champ.version || 'v1.0';
+        if (accEl) {
+            const acc = (champ.rolling_accuracy || 0).toFixed(1);
+            accEl.textContent = `${acc}%`;
+            accEl.style.color = champ.rolling_accuracy >= 55.0 ? '#10b981' : (champ.rolling_accuracy >= 45.0 ? '#f59e0b' : '#ef4444');
+        }
+        if (evalsEl) evalsEl.textContent = champ.total_evaluations || 0;
+    }
+
+    if (chall) {
+        const nameEl = document.getElementById('chall-model-name');
+        const verEl = document.getElementById('chall-version-badge');
+        const accEl = document.getElementById('chall-acc-val');
+        const deltaEl = document.getElementById('chall-delta-val');
+        const promoBtn = document.getElementById('btn-promote-challenger');
+        if (nameEl) nameEl.textContent = chall.name || chall.model_id;
+        if (verEl) verEl.textContent = chall.version || 'v2.0';
+        if (accEl) {
+            const acc = (chall.rolling_accuracy || 0).toFixed(1);
+            accEl.textContent = `${acc}%`;
+        }
+        if (deltaEl) {
+            const delta = chall.shadow_win_delta || 0;
+            deltaEl.textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`;
+            deltaEl.style.color = delta >= 5.0 ? '#10b981' : (delta > 0 ? '#f59e0b' : 'white');
+        }
+        if (promoBtn) {
+            if (modelData.auto_promote_eligible) {
+                promoBtn.style.background = '#10b981';
+                promoBtn.textContent = '⚡ Promote (+5% Lead)';
+            } else {
+                promoBtn.style.background = '#2563eb';
+                promoBtn.textContent = '⚡ Promote Now';
+            }
+        }
+    }
+
+    if (badge) {
+        if (modelData.auto_rollback_eligible) {
+            badge.textContent = '⚠️ Rollback Recommended';
+            badge.style.color = '#ef4444';
+            badge.style.borderColor = '#ef4444';
+            badge.style.background = 'rgba(239, 68, 68, 0.2)';
+        } else if (modelData.auto_promote_eligible) {
+            badge.textContent = '🚀 Challenger Outperforming';
+            badge.style.color = '#10b981';
+            badge.style.borderColor = '#10b981';
+            badge.style.background = 'rgba(16, 185, 129, 0.2)';
+        } else {
+            badge.textContent = '🏆 Champion Active';
+            badge.style.color = '#10b981';
+            badge.style.borderColor = '#10b981';
+            badge.style.background = 'rgba(16, 185, 129, 0.2)';
+        }
+    }
+}
+
+async function triggerEmergencyHaltRiskCenter() {
+    const reason = prompt("Enter emergency halt reason (e.g. Market Dislocation / Operational Anomaly):", "Manual operator halt triggered from dashboard");
+    if (!reason) return;
+    try {
+        const resp = await fetch('/api/v1/system/risk-center/halt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason, triggered_by: 'DASHBOARD_OPERATOR' })
+        });
+        const data = await resp.json();
+        alert(`🚨 EMERGENCY HALT ENGAGED: ${data.reason}`);
+        fetchPortfolio();
+        fetchUnifiedRiskStatus();
+    } catch (e) {
+        alert(`Failed to trigger halt: ${e}`);
+    }
+}
+
+async function resumeRiskCenter() {
+    const confirmStr = prompt("To clear emergency halt and resume execution, type 'CONFIRM_RESUME':");
+    if (!confirmStr) return;
+    try {
+        const resp = await fetch('/api/v1/system/risk-center/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirmation: confirmStr, authorized_by: 'RISK_DIRECTOR' })
+        });
+        if (resp.ok) {
+            alert("✅ System Emergency Halt Cleared. Normal execution resumed.");
+            fetchPortfolio();
+            fetchUnifiedRiskStatus();
+        } else {
+            const err = await resp.json();
+            alert(`Resume rejected: ${err.detail || 'Invalid confirmation'}`);
+        }
+    } catch (e) {
+        alert(`Failed to resume: ${e}`);
+    }
+}
+
+async function promoteChallenger() {
+    if (!confirm("Are you sure you want to promote the Challenger model to active Champion?")) return;
+    try {
+        const resp = await fetch('/api/v1/system/models/promote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: "Manual promotion from dashboard" })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            alert(`🏆 Model Promoted! New Champion: ${data.new_champion} (${data.new_version})`);
+            fetchPortfolio();
+            fetchModelsStatus();
+            fetchUnifiedRiskStatus();
+        } else {
+            alert(`Promotion failed: ${data.detail || data.message}`);
+        }
+    } catch (e) {
+        alert(`Promotion error: ${e}`);
+    }
+}
+
+async function rollbackChampion() {
+    if (!confirm("Are you sure you want to rollback the active Champion model to safe Fallback?")) return;
+    try {
+        const resp = await fetch('/api/v1/system/models/rollback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: "Manual rollback from dashboard" })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            alert(`🔄 Model Rollback Completed! Active Model: ${data.active_model} (${data.active_version})`);
+            fetchPortfolio();
+            fetchModelsStatus();
+            fetchUnifiedRiskStatus();
+        } else {
+            alert(`Rollback failed: ${data.detail || data.message}`);
+        }
+    } catch (e) {
+        alert(`Rollback error: ${e}`);
+    }
+}
+
 // Initial render & lifecycle
 document.addEventListener('DOMContentLoaded', () => {
     updateTime();
@@ -618,9 +1116,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Connect live WebSocket stream
     setupWebSocket();
     
-    // System status & logs
+    // System status, logs & risk metrics
     fetchSystemStatus();
     fetchAuditLogs();
+    fetchRiskVarMetrics();
+    fetchUnifiedRiskStatus();
+    fetchModelsStatus();
     
     // Fallback polling: if WebSocket disconnects, poll portfolio every second
     setInterval(() => {
@@ -629,6 +1130,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }, 1500);
 
-    // Poll audit logs regularly
+    // Poll audit logs and risk metrics regularly
     setInterval(fetchAuditLogs, 2500);
+    setInterval(fetchRiskVarMetrics, 5000);
+    setInterval(fetchUnifiedRiskStatus, 4000);
+    setInterval(fetchModelsStatus, 5000);
 });
+
+

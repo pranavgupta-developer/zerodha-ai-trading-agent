@@ -143,3 +143,115 @@ class QuantEngine:
         df['composite_score'] = df_z['sharpe'] + df_z['momentum_20'] + df_z['max_drawdown']
         
         return df.sort_values(by='composite_score', ascending=False)
+
+    def calculate_var_cvar(
+        self,
+        daily_returns: pd.Series,
+        confidence: float = 0.95,
+        portfolio_value: float = 1.0,
+        method: str = "historical"
+    ) -> Dict[str, Any]:
+        """
+        Calculates Value at Risk (VaR) and Conditional Value at Risk (CVaR / Expected Shortfall).
+        
+        Args:
+            daily_returns: pd.Series of period/daily returns.
+            confidence: Confidence level (e.g., 0.95 for 95% or 0.99 for 99%).
+            portfolio_value: Total portfolio value in currency to calculate absolute loss.
+            method: 'historical' (empirical quantile) or 'parametric' (Gaussian assumption).
+            
+        Returns:
+            Dict with var_pct, cvar_pct, var_amount, cvar_amount, confidence, method.
+        """
+        clean_returns = daily_returns.dropna()
+        if clean_returns.empty or len(clean_returns) < 2:
+            return {
+                "var_pct": 0.0,
+                "cvar_pct": 0.0,
+                "var_amount": 0.0,
+                "cvar_amount": 0.0,
+                "confidence": confidence,
+                "method": method
+            }
+
+        alpha = 1.0 - confidence  # e.g. 0.05 for 95%
+        
+        if method == "parametric":
+            from scipy.stats import norm
+            mu = float(clean_returns.mean())
+            sigma = float(clean_returns.std())
+            z = float(norm.ppf(confidence))
+            # VaR expressed as positive loss fraction
+            var_pct = float(max(0.0, z * sigma - mu))
+            # Analytical CVaR for standard normal: mu + sigma * (phi(z) / (1-confidence))
+            pdf_z = float(norm.pdf(z))
+            cvar_pct = float(max(var_pct, (sigma * (pdf_z / alpha)) - mu))
+        else:  # historical
+            cutoff = float(np.percentile(clean_returns, alpha * 100))
+            var_pct = float(max(0.0, -cutoff))
+            tail = clean_returns[clean_returns <= cutoff]
+            if len(tail) > 0:
+                cvar_pct = float(max(var_pct, -float(tail.mean())))
+            else:
+                cvar_pct = var_pct
+
+        return {
+            "var_pct": round(var_pct, 6),
+            "cvar_pct": round(cvar_pct, 6),
+            "var_amount": round(var_pct * portfolio_value, 2),
+            "cvar_amount": round(cvar_pct * portfolio_value, 2),
+            "confidence": confidence,
+            "method": method
+        }
+
+    def calculate_portfolio_var_cvar(
+        self,
+        weights: Dict[str, float],
+        returns_df: pd.DataFrame,
+        confidence: float = 0.95,
+        portfolio_value: float = 1.0,
+        method: str = "historical"
+    ) -> Dict[str, Any]:
+        """
+        Calculates VaR and CVaR for a multi-asset portfolio with given symbol weights.
+        """
+        common_symbols = [s for s in returns_df.columns if s in weights and weights[s] > 0]
+        if not common_symbols:
+            return {
+                "var_pct": 0.0,
+                "cvar_pct": 0.0,
+                "var_amount": 0.0,
+                "cvar_amount": 0.0,
+                "confidence": confidence,
+                "method": method
+            }
+        
+        raw_weights = np.array([weights[s] for s in common_symbols], dtype=float)
+        w_sum = np.sum(raw_weights)
+        if w_sum > 0:
+            norm_weights = raw_weights / w_sum
+        else:
+            norm_weights = raw_weights
+            
+        aligned_returns = returns_df[common_symbols].dropna()
+        if aligned_returns.empty or len(aligned_returns) < 2:
+            return {
+                "var_pct": 0.0,
+                "cvar_pct": 0.0,
+                "var_amount": 0.0,
+                "cvar_amount": 0.0,
+                "confidence": confidence,
+                "method": method
+            }
+            
+        portfolio_returns = pd.Series(
+            np.dot(aligned_returns.values, norm_weights),
+            index=aligned_returns.index
+        )
+        return self.calculate_var_cvar(
+            daily_returns=portfolio_returns,
+            confidence=confidence,
+            portfolio_value=portfolio_value,
+            method=method
+        )
+

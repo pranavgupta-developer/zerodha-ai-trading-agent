@@ -170,3 +170,81 @@ def test_hold_signal_fail(risk_engine, base_signal, base_account):
     approved, reason = risk_engine.validate_signal(base_signal, base_account, requested_qty=50)
     assert approved is False
     assert "HOLD" in reason
+
+# 11. Sector Mapping & Concentration
+def test_sector_mapping(risk_engine):
+    assert risk_engine.get_sector("HDFCBANK") == "BANKING_FINANCIAL"
+    assert risk_engine.get_sector("NSE:TCS") == "IT"
+    assert risk_engine.get_sector("RELIANCE") == "ENERGY"
+    assert risk_engine.get_sector("UNKNOWN_CORP") == "OTHER"
+
+def test_sector_concentration_pass(risk_engine, base_signal, base_account):
+    # RELIANCE is ENERGY. Max exposure = 200,000, 35% cap = 70,000.
+    # Existing in ENERGY = 30,000. New order = 100 * 50 = 5,000. Total = 35,000 (17.5% <= 35%)
+    base_account.open_positions = {"ONGC": 30000.0}
+    approved, _ = risk_engine.validate_signal(base_signal, base_account, requested_qty=50)
+    assert approved is True
+
+def test_sector_concentration_breach(risk_engine, base_signal, base_account):
+    # RELIANCE is ENERGY. Max exposure = 200,000, 35% cap = 70,000.
+    # Existing in ENERGY = 68,000. New order = 100 * 50 = 5,000. Total = 73,000 (36.5% > 35%)
+    base_account.open_positions = {"ONGC": 68000.0}
+    approved, reason = risk_engine.validate_signal(base_signal, base_account, requested_qty=50)
+    assert approved is False
+    assert "SECTOR_CONCENTRATION_BREACH" in reason
+    assert "ENERGY" in reason
+
+def test_sector_breakdown(risk_engine, base_account):
+    base_account.open_positions = {
+        "HDFCBANK": 40000.0,
+        "SBIN": 20000.0,
+        "TCS": 30000.0,
+        "RELIANCE": 25000.0
+    }
+    breakdown = risk_engine.get_sector_breakdown(base_account)
+    assert breakdown["total_exposure"] == 115000.0
+    assert "BANKING_FINANCIAL" in breakdown["sectors"]
+    assert breakdown["sectors"]["BANKING_FINANCIAL"]["exposure"] == 60000.0
+    assert "IT" in breakdown["sectors"]
+    assert "ENERGY" in breakdown["sectors"]
+
+# 12. Portfolio VaR / CVaR Enforcement
+def test_portfolio_var_cvar_enforcement_pass(risk_engine, base_signal, base_account):
+    import pandas as pd
+    import numpy as np
+    
+    risk_engine.config.enforce_var_limits = True
+    risk_engine.config.max_portfolio_var_pct = 0.10  # generous 10% limit
+    
+    # Mild volatility
+    np.random.seed(42)
+    dates = pd.date_range('2024-01-01', periods=100)
+    returns_df = pd.DataFrame({
+        'RELIANCE': np.random.normal(0.0005, 0.005, 100)
+    }, index=dates)
+    
+    approved, reason = risk_engine.validate_signal(
+        base_signal, base_account, requested_qty=50, returns_data=returns_df
+    )
+    assert approved is True
+
+def test_portfolio_var_cvar_enforcement_fail(risk_engine, base_signal, base_account):
+    import pandas as pd
+    import numpy as np
+    
+    risk_engine.config.enforce_var_limits = True
+    risk_engine.config.max_portfolio_var_pct = 0.01  # very strict 1% limit
+    
+    # High volatility asset
+    np.random.seed(42)
+    dates = pd.date_range('2024-01-01', periods=100)
+    returns_df = pd.DataFrame({
+        'RELIANCE': np.random.normal(-0.002, 0.04, 100)
+    }, index=dates)
+    
+    approved, reason = risk_engine.validate_signal(
+        base_signal, base_account, requested_qty=50, returns_data=returns_df
+    )
+    assert approved is False
+    assert "VAR_LIMIT_BREACH" in reason
+

@@ -22,7 +22,8 @@ class TradingPipeline:
         risk_engine: RiskEngine, 
         order_manager: OrderManager,
         position_sizer: Optional[DynamicPositionSizer] = None,
-        anomaly_detector: Optional[Any] = None
+        anomaly_detector: Optional[Any] = None,
+        model_registry: Optional[Any] = None
     ):
         self.strategy = strategy
         self.agent = agent
@@ -30,6 +31,7 @@ class TradingPipeline:
         self.order_manager = order_manager
         self.position_sizer = position_sizer or DynamicPositionSizer()
         self.anomaly_detector = anomaly_detector
+        self.model_registry = model_registry
 
     def process_tick(
         self, 
@@ -76,6 +78,14 @@ class TradingPipeline:
         candidate_trade.risk_budget = alloc.risk_budget
         candidate_trade.risk_pct = alloc.risk_budget_pct
         candidate_trade.sizing_rationale = alloc.sizing_rationale
+
+        # 2c. Run Challenger in Shadow Mode if ModelRegistry is configured
+        if self.model_registry:
+            self.model_registry.evaluate_shadow(
+                symbol=candidate_trade.symbol,
+                indicators=indicators,
+                entry_price=candidate_trade.entry_price
+            )
             
         # Check if human approval is required
         if candidate_trade.approval_required:

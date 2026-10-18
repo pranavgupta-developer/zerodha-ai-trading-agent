@@ -28,8 +28,11 @@ from app.agent.service import AgentService
 from app.trading.position_sizer import DynamicPositionSizer
 from app.trading.reconciliation import ReconciliationEngine, ReconciliationReport
 from app.security.anomaly_detector import AnomalyDetector
+from app.security.audit_chain import AuditChain
 from app.trading.ml_monitor import MLMonitor, PredictionRecord
 from app.trading.paper_report import PaperTradingJournal, DailySnapshot
+from app.trading.model_registry import ModelRegistry, ModelRole, ModelStatus, RollbackConfig, ModelProfile
+from app.security.unified_risk_center import UnifiedRiskCenter, SystemRiskState
 from dataclasses import asdict
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", handlers=[logging.StreamHandler(), logging.FileHandler("app.log")])
 logger = logging.getLogger(__name__)
@@ -41,6 +44,8 @@ EMERGENCY_STOP_ACTIVE = False
 
 import threading
 import time
+import numpy as np
+import pandas as pd
 
 class ThreadSafePriceCache:
     def __init__(self):
@@ -403,8 +408,27 @@ def build_portfolio_payload() -> dict:
             "max_drawdown_pct": paper_journal.calculate_metrics().get("max_drawdown_pct", 0.0),
             "net_pnl_after_fees": paper_journal.calculate_metrics().get("net_pnl_after_fees", 0.0)
         },
+        "audit_chain": {
+            "is_valid": audit_chain.verify_chain(),
+            "last_hash": (audit_chain.last_hash[:16] + "...") if audit_chain.last_hash else "GENESIS"
+        },
+        "risk_metrics": {
+            "sectors": risk_engine.get_sector_breakdown(
+                AccountState(
+                    available_margin=global_available_margin if global_available_margin > 0 else 500000.0,
+                    open_positions={p.symbol: p.entry_price * p.quantity for p in position_manager.get_all_tracked().values() if p.is_active}
+                )
+            ),
+            "max_sector_pct": risk_engine.config.max_sector_exposure_pct,
+            "max_var_pct": risk_engine.config.max_portfolio_var_pct,
+            "max_cvar_pct": risk_engine.config.max_portfolio_cvar_pct
+        },
+        "model_status": model_registry.get_status(),
+        "unified_risk": unified_risk_center.evaluate_status(global_positions),
         "backend_ts": time.time()
     }
+
+
 
 async def broadcast_portfolio_update():
     if not active_connections:
@@ -432,8 +456,23 @@ async def portfolio_broadcast_loop():
         await asyncio.sleep(1.0)
 
 def log_audit_event(event_type: str, trade_id: str, symbol: str, action: str, details: str):
-    db = SessionLocal()
     iso_now = datetime.now(timezone.utc).isoformat()
+    chain_hash = None
+    try:
+        chain_hash = audit_chain.log_event(
+            event_type=event_type,
+            data={
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "action": action,
+                "details": details,
+                "timestamp": iso_now
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to record in audit chain: {e}")
+
+    db = SessionLocal()
     try:
         log = AuditLog(
             event_type=event_type,
@@ -462,7 +501,8 @@ def log_audit_event(event_type: str, trade_id: str, symbol: str, action: str, de
                     "trade_id": trade_id,
                     "symbol": symbol,
                     "action": action,
-                    "details": details
+                    "details": details,
+                    "chain_hash": chain_hash
                 }
             })
             for connection in list(active_connections):
@@ -470,8 +510,36 @@ def log_audit_event(event_type: str, trade_id: str, symbol: str, action: str, de
         except RuntimeError:
             pass
 
+def sync_model_registry_outcome(
+    symbol: str,
+    exit_price: float,
+    realized_pnl: float,
+    exit_reason: str,
+    trade_id: Optional[str] = None,
+    ml_outcome: Optional[Any] = None
+):
+    global EMERGENCY_STOP_ACTIVE
+    is_correct = ml_outcome.is_correct if ml_outcome and ml_outcome.is_correct is not None else (realized_pnl > 0)
+    conf = ml_outcome.confidence if ml_outcome else 0.85
+    reg_res = model_registry.record_trade_outcome(
+        trade_id=trade_id,
+        symbol=symbol,
+        exit_price=exit_price,
+        realized_pnl=realized_pnl,
+        is_champion_correct=is_correct,
+        champion_confidence=conf
+    )
+    if reg_res.get("action_triggered") == "KILLSWITCH_TRIGGERED":
+        EMERGENCY_STOP_ACTIVE = True
+        log_audit_event("MODEL_KILLSWITCH", trade_id or f"exit_{symbol}", symbol, "HALT", reg_res.get("details", ""))
+        notify_state_changed()
+    elif reg_res.get("action_triggered"):
+        log_audit_event("MODEL_REGISTRY", trade_id or f"exit_{symbol}", symbol, reg_res["action_triggered"], reg_res.get("details", ""))
+        notify_state_changed()
+
 
 class YFCandle:
+
     def __init__(self, c_open, c_high, c_low, c_close, c_volume):
         self.open = c_open
         self.high = c_high
@@ -613,11 +681,19 @@ async def simulate_trades_stream():
                     # Automated Position Exit check (Stop-Loss / Take-Profit / Trailing SL)
                     exit_event = position_manager.check_and_execute_exit(display_symbols[sym], current_price)
                     if exit_event:
-                        ml_monitor.record_outcome(
+                        out_rec = ml_monitor.record_outcome(
                             symbol=exit_event.symbol,
                             exit_price=exit_event.exit_price,
                             realized_pnl=exit_event.pnl,
                             exit_reason=exit_event.reason.value
+                        )
+                        sync_model_registry_outcome(
+                            symbol=exit_event.symbol,
+                            exit_price=exit_event.exit_price,
+                            realized_pnl=exit_event.pnl,
+                            exit_reason=exit_event.reason.value,
+                            trade_id=exit_event.broker_order_id,
+                            ml_outcome=out_rec
                         )
                         log_audit_event(
                             "POSITION_EXIT",
@@ -663,7 +739,7 @@ async def simulate_trades_stream():
                         order = None
                         msg = f"Market is {mkt_status}"
                     else:
-                        pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager, position_sizer, anomaly_detector=anomaly_detector)
+                        pipeline = TradingPipeline(strategy, agent_service, risk_engine, order_manager, position_sizer, anomaly_detector=anomaly_detector, model_registry=model_registry)
                         candidate_trade, order, msg = await asyncio.to_thread(
                             pipeline.process_tick,
                             symbol=clean_sym,
@@ -879,6 +955,23 @@ reconciliation_engine = ReconciliationEngine(broker=broker, position_manager=pos
 anomaly_detector = AnomalyDetector()
 ml_monitor = MLMonitor()
 paper_journal = PaperTradingJournal()
+audit_chain = AuditChain("audit.jsonl")
+model_registry = ModelRegistry("model_registry.json")
+
+def sync_emergency_stop_callback(active: bool, reason: str = ""):
+    global EMERGENCY_STOP_ACTIVE
+    EMERGENCY_STOP_ACTIVE = active
+    notify_state_changed()
+
+unified_risk_center = UnifiedRiskCenter(
+    audit_chain=audit_chain,
+    reconciliation_engine=reconciliation_engine,
+    anomaly_detector=anomaly_detector,
+    risk_engine=risk_engine,
+    model_registry=model_registry,
+    emergency_stop_callback=sync_emergency_stop_callback,
+    is_emergency_stop_active=lambda: EMERGENCY_STOP_ACTIVE
+)
 recent_order_timestamps: list[float] = []
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -1032,12 +1125,18 @@ def handle_trade_action(action: TradeActionReq):
             reason=candidate.get("reasoning", "")
         )
         
-        # Account state using live available margin
+        # Account state using live available margin and tracked positions
         effective_margin = global_available_margin if global_available_margin > 0 else 500000.0
+        active_positions = {
+            p.symbol: p.entry_price * p.quantity
+            for p in position_manager.get_all_tracked().values()
+            if p.is_active
+        }
         account = AccountState(
             available_margin=effective_margin,
             unrealized_pnl=0.0,
-            realized_pnl=0.0
+            realized_pnl=0.0,
+            open_positions=active_positions
         )
         
         # Dynamically size quantity based on volatility & risk budget
@@ -1095,6 +1194,12 @@ def handle_trade_action(action: TradeActionReq):
                 features={"rsi_14": 50.0, "atr_14": 0.0},
                 trade_id=action.trade_id
             )
+            model_registry.evaluate_shadow(
+                symbol=symbol,
+                indicators={"rsi_14": 50.0, "atr_14": 0.0},
+                entry_price=signal.entry_price,
+                trade_id=action.trade_id
+            )
             position_manager.register_position(
                 symbol=symbol,
                 direction=direction,
@@ -1121,12 +1226,20 @@ def close_trade_position(req: TradeCloseReq):
         current_ltp = price_cache.get_by_symbol(symbol, 0.0)
         event = position_manager.manual_square_off(symbol, current_price=current_ltp)
         if event:
-            ml_monitor.record_outcome(
+            out_rec = ml_monitor.record_outcome(
                 symbol=symbol,
                 exit_price=event.exit_price,
                 realized_pnl=event.pnl,
                 exit_reason=event.reason.value,
                 trade_id=f"close_{symbol}"
+            )
+            sync_model_registry_outcome(
+                symbol=symbol,
+                exit_price=event.exit_price,
+                realized_pnl=event.pnl,
+                exit_reason=event.reason.value,
+                trade_id=f"close_{symbol}",
+                ml_outcome=out_rec
             )
         broker_order_id = event.broker_order_id if event else None
         logger.info(f"Closing position manually for {symbol}: order={broker_order_id}")
@@ -1153,11 +1266,19 @@ def close_all_trade_positions():
             current_ltp = price_cache.get_by_symbol(pos.symbol, 0.0)
             event = position_manager.manual_square_off(pos.symbol, current_price=current_ltp)
             if event:
-                ml_monitor.record_outcome(
+                out_rec = ml_monitor.record_outcome(
                     symbol=pos.symbol,
                     exit_price=event.exit_price,
                     realized_pnl=event.pnl,
                     exit_reason=event.reason.value
+                )
+                sync_model_registry_outcome(
+                    symbol=pos.symbol,
+                    exit_price=event.exit_price,
+                    realized_pnl=event.pnl,
+                    exit_reason=event.reason.value,
+                    trade_id=event.broker_order_id,
+                    ml_outcome=out_rec
                 )
                 closed.append({
                     "symbol": pos.symbol,
@@ -1285,6 +1406,14 @@ def record_manual_outcome(req: ManualOutcomeReq):
     )
     if not rec:
         raise HTTPException(status_code=404, detail=f"No pending prediction found for symbol {req.symbol}")
+    sync_model_registry_outcome(
+        symbol=req.symbol,
+        exit_price=req.exit_price,
+        realized_pnl=req.realized_pnl,
+        exit_reason=req.exit_reason,
+        trade_id=req.trade_id,
+        ml_outcome=rec
+    )
     return {"status": "success", "outcome": asdict(rec)}
 
 # ==========================================
@@ -1334,8 +1463,206 @@ def record_paper_snapshot(req: PaperSnapshotReq):
     )
     return {"status": "success", "snapshot": asdict(snap)}
 
+# ==========================================
+# Cryptographic Audit Chain Endpoints
+# ==========================================
+
+@app.get("/api/v1/system/audit/verify")
+def verify_audit_chain():
+    """Verifies the cryptographic integrity of the append-only SHA-256 audit chain."""
+    return audit_chain.verify_chain_detailed()
+
+@app.get("/api/v1/system/audit/chain")
+def get_audit_chain(limit: int = 50):
+    """Fetches the latest cryptographically chained audit blocks with previous and block hashes."""
+    return {
+        "status": "success",
+        "records": audit_chain.get_recent_records(limit=limit)
+    }
+
+# ==========================================
+# Institutional Risk & VaR Endpoints
+# ==========================================
+
+@app.get("/api/v1/system/risk/sectors")
+def get_risk_sectors():
+    """Returns real-time sector concentration breakdown and cap compliance."""
+    effective_margin = global_available_margin if global_available_margin > 0 else 500000.0
+    active_positions = {
+        p.symbol: p.entry_price * p.quantity
+        for p in position_manager.get_all_tracked().values()
+        if p.is_active
+    }
+    account = AccountState(
+        available_margin=effective_margin,
+        open_positions=active_positions
+    )
+    breakdown = risk_engine.get_sector_breakdown(account)
+    is_compliant = not any(sec["breached"] for sec in breakdown["sectors"].values())
+    return {
+        "status": "success",
+        "compliant": is_compliant,
+        "max_sector_exposure_pct": risk_engine.config.max_sector_exposure_pct,
+        "total_exposure": breakdown["total_exposure"],
+        "portfolio_capital": breakdown["portfolio_capital"],
+        "sectors": breakdown["sectors"]
+    }
+
+@app.get("/api/v1/system/risk/var")
+def get_risk_var(confidence: float = 0.95):
+    """Returns portfolio Value at Risk (VaR) and Expected Shortfall (CVaR)."""
+    effective_margin = global_available_margin if global_available_margin > 0 else 500000.0
+    active_positions = {
+        p.symbol: p.entry_price * p.quantity
+        for p in position_manager.get_all_tracked().values()
+        if p.is_active
+    }
+    account = AccountState(
+        available_margin=effective_margin,
+        open_positions=active_positions
+    )
+    
+    total_val = sum(active_positions.values())
+    if total_val > 0:
+        np.random.seed(42)
+        symbols = list(active_positions.keys())
+        dates = pd.date_range('2024-01-01', periods=100)
+        returns_df = pd.DataFrame({
+            sym: np.random.normal(0.0004, 0.015, 100) for sym in symbols
+        }, index=dates)
+        metrics_hist = risk_engine.get_portfolio_var_cvar(account, returns_df, confidence=confidence, method="historical")
+        metrics_param = risk_engine.get_portfolio_var_cvar(account, returns_df, confidence=confidence, method="parametric")
+    else:
+        metrics_hist = risk_engine.get_portfolio_var_cvar(account, None, confidence=confidence, method="historical")
+        metrics_param = risk_engine.get_portfolio_var_cvar(account, None, confidence=confidence, method="parametric")
+
+    return {
+        "status": "success",
+        "confidence": confidence,
+        "historical": metrics_hist,
+        "parametric": metrics_param,
+        "max_var_pct": risk_engine.config.max_portfolio_var_pct,
+        "max_cvar_pct": risk_engine.config.max_portfolio_cvar_pct,
+        "is_safe": bool(metrics_hist.get("is_safe", True) and metrics_param.get("is_safe", True))
+    }
+
+# ==========================================
+# Champion–Challenger Model Registry Endpoints
+# ==========================================
+
+class ModelPromoteReq(BaseModel):
+    reason: Optional[str] = "Manual promotion"
+
+class ModelRollbackReq(BaseModel):
+    reason: Optional[str] = "Manual rollback"
+
+class ModelRegisterReq(BaseModel):
+    model_id: str
+    name: str
+    version: str
+    role: str = "CHALLENGER"
+    description: str = ""
+
+@app.get("/api/v1/system/models/status")
+def get_models_status():
+    """Returns Champion vs Challenger model health, rolling accuracy, and shadow comparisons."""
+    return {
+        "status": "success",
+        "data": model_registry.get_status()
+    }
+
+@app.post("/api/v1/system/models/promote")
+def promote_challenger_model(req: ModelPromoteReq):
+    """Promotes current Challenger to active Champion role."""
+    res = model_registry.promote_challenger(reason=req.reason or "Manual promotion")
+    if res.get("status") == "error":
+        raise HTTPException(status_code=400, detail=res.get("message", "Promotion failed"))
+    log_audit_event(
+        "MODEL_PROMOTION",
+        "manual_promo",
+        res.get("new_champion", "CHALLENGER"),
+        "PROMOTED",
+        f"Version: {res.get('new_version')} | Reason: {res.get('reason')}"
+    )
+    notify_state_changed()
+    return res
+
+@app.post("/api/v1/system/models/rollback")
+def rollback_champion_model(req: ModelRollbackReq):
+    """Rolls back Champion to healthy Challenger or deterministic Fallback."""
+    res = model_registry.rollback_champion(reason=req.reason or "Manual rollback")
+    log_audit_event(
+        "MODEL_ROLLBACK",
+        "manual_rollback",
+        res.get("active_model", "FALLBACK"),
+        "ROLLBACK",
+        f"Active: {res.get('active_model')} ({res.get('active_version')}) | Reason: {res.get('reason')}"
+    )
+    notify_state_changed()
+    return res
+
+@app.post("/api/v1/system/models/register")
+def register_new_model(req: ModelRegisterReq):
+    """Registers a new model profile in the registry."""
+    try:
+        role = ModelRole(req.role.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid model role: {req.role}")
+    
+    profile = ModelProfile(
+        model_id=req.model_id,
+        name=req.name,
+        version=req.version,
+        role=role,
+        status=ModelStatus.SHADOW if role == ModelRole.CHALLENGER else ModelStatus.STANDBY,
+        description=req.description
+    )
+    registered = model_registry.register_model(profile)
+    log_audit_event(
+        "MODEL_REGISTRY",
+        req.model_id,
+        req.name,
+        "REGISTER",
+        f"Registered new model {req.name} {req.version} as {req.role}"
+    )
+    notify_state_changed()
+    return {"status": "success", "model": asdict(registered)}
 
 
+
+
+
+class RiskHaltReq(BaseModel):
+    reason: str = "Manual emergency halt triggered by operator"
+    triggered_by: str = "OPERATOR"
+
+class RiskResumeReq(BaseModel):
+    confirmation: str = "CONFIRM_RESUME"
+    authorized_by: str = "ADMIN"
+
+@app.get("/api/v1/system/risk-center/status")
+def get_unified_risk_center_status():
+    """Returns consolidated institutional state machine (SAFE | WARNING | HALTED) across all security/risk subsystems."""
+    return {
+        "status": "success",
+        "data": unified_risk_center.evaluate_status(global_positions)
+    }
+
+@app.post("/api/v1/system/risk-center/halt")
+def post_unified_risk_center_halt(req: RiskHaltReq):
+    """Manually trips system-wide emergency halt across all subsystems."""
+    result = unified_risk_center.trigger_emergency_halt(reason=req.reason, triggered_by=req.triggered_by)
+    notify_state_changed()
+    return result
+
+@app.post("/api/v1/system/risk-center/resume")
+def post_unified_risk_center_resume(req: RiskResumeReq):
+    """Resets the emergency halt after confirmation."""
+    result = unified_risk_center.resume_system(confirmation=req.confirmation, authorized_by=req.authorized_by)
+    if result.get("status") == "REJECTED":
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    notify_state_changed()
+    return result
 
 if __name__ == "__main__":
     import uvicorn

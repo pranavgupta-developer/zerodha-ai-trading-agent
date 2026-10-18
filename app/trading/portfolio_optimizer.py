@@ -12,15 +12,19 @@ class PortfolioOptimizer:
         risk_free_rate: float = 0.05,
         max_position_weight: float = 0.25,
         max_portfolio_exposure: float = 1.0,
-        transaction_cost_rate: float = 0.001
+        transaction_cost_rate: float = 0.001,
+        max_sector_weight: float = 0.35,
+        sector_mapping: Optional[Dict[str, str]] = None
     ):
         """
-        Markowitz Portfolio Optimizer
+        Markowitz Portfolio Optimizer with Position and Sector Concentration Constraints.
         """
         self.risk_free_rate = risk_free_rate
         self.max_position_weight = max_position_weight
         self.max_portfolio_exposure = max_portfolio_exposure
         self.transaction_cost_rate = transaction_cost_rate
+        self.max_sector_weight = max_sector_weight
+        self.sector_mapping = sector_mapping or {}
 
     def calculate_expected_returns(self, returns_df: pd.DataFrame) -> pd.Series:
         """
@@ -35,12 +39,20 @@ class PortfolioOptimizer:
         """
         return returns_df.cov() * 252
 
-    def optimize(self, current_weights: Dict[str, float], prices_df: pd.DataFrame) -> Dict[str, float]:
+    def optimize(
+        self,
+        current_weights: Dict[str, float],
+        prices_df: pd.DataFrame,
+        sector_mapping: Optional[Dict[str, str]] = None,
+        max_sector_weight: Optional[float] = None
+    ) -> Dict[str, float]:
         """
         Optimizes portfolio weights using Markowitz Mean-Variance Optimization.
         
         Prices_df should be a DataFrame where columns are asset symbols and values are daily prices.
         current_weights: Dictionary of {symbol: weight} representing the current portfolio.
+        sector_mapping: Optional mapping of symbol -> sector name.
+        max_sector_weight: Optional override for max allowable allocation per sector.
         """
         # Ensure symbols align
         symbols = list(prices_df.columns)
@@ -83,6 +95,23 @@ class PortfolioOptimizer:
         constraints = [
             {'type': 'ineq', 'fun': lambda w: self.max_portfolio_exposure - np.sum(w)}
         ]
+        
+        # 2. Sector concentration constraints
+        active_sector_map = sector_mapping or self.sector_mapping
+        effective_max_sector = max_sector_weight if max_sector_weight is not None else self.max_sector_weight
+        if active_sector_map and effective_max_sector > 0:
+            sectors: Dict[str, List[int]] = {}
+            for i, sym in enumerate(symbols):
+                sec = active_sector_map.get(sym)
+                if sec:
+                    sectors.setdefault(sec, []).append(i)
+            
+            for sec, idx_list in sectors.items():
+                if idx_list:
+                    constraints.append({
+                        'type': 'ineq',
+                        'fun': lambda w, idx=idx_list, cap=effective_max_sector: cap - np.sum(w[idx])
+                    })
         
         # Bounds for each asset
         # 0 <= weight <= max_position_weight

@@ -51,6 +51,18 @@
             </div>
         </div>
 
+        <!-- Unified Risk & Security Control Center Banner -->
+        <div id="unified-risk-banner" style="background: rgba(16, 185, 129, 0.12); border: 1px solid #10b981; color: #10b981; padding: 12px 20px; font-weight: 600; border-radius: 8px; margin: 12px 0; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
+            <div style="display: flex; align-items: center; gap: 14px;">
+                <span id="risk-center-status-badge" style="background: #10b981; color: #111827; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">🟢 SYSTEM SAFE</span>
+                <span id="risk-center-summary-text" style="font-size: 0.88rem; color: #e5e7eb;">All institutional security, reconciliation, and risk boundaries cryptographically verified.</span>
+            </div>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <button onclick="triggerEmergencyHaltRiskCenter()" style="padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 4px; font-weight: 600; font-size: 0.8rem; cursor: pointer;">🚨 Emergency Halt</button>
+                <button id="btn-resume-system" onclick="resumeRiskCenter()" style="display: none; padding: 6px 12px; background: #059669; color: white; border: none; border-radius: 4px; font-weight: 600; font-size: 0.8rem; cursor: pointer;">✅ Resume System</button>
+            </div>
+        </div>
+
         <!-- State Mismatch Alert Banner -->
         <div id="reconciliation-alert-banner" style="display: none; background: #dc2626; color: white; padding: 10px 20px; font-weight: 600; text-align: center; border-radius: 6px; margin: 10px 0;">
             ⚠️ STATE MISMATCH DETECTED: Local positions differ from Zerodha broker state. <span id="reconcile-discrepancy-msg"></span>
@@ -187,10 +199,210 @@
                 </div>
             </section>
             
+            <!-- Unified Risk & Security Control Center Subsystems Panel -->
+            <section class="panel risk-control-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>Unified Risk & Security Control Center</h2>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span id="control-center-state-pill" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 700; border: 1px solid #10b981;">STATUS: SAFE</span>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; padding: 0.75rem 0;">
+                    <!-- Subsystem 1: Audit Chain -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">1. AUDIT CHAIN</span>
+                            <span id="cc-audit-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">VERIFIED</span>
+                        </div>
+                        <div id="cc-audit-records" style="font-size: 1.1rem; font-weight: bold; color: white;">-- records</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">SHA-256 Hash Chain</div>
+                    </div>
+
+                    <!-- Subsystem 2: Broker Reconciliation -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">2. BROKER SYNC</span>
+                            <span id="cc-reconcile-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">SYNCED</span>
+                        </div>
+                        <div id="cc-reconcile-details" style="font-size: 1.1rem; font-weight: bold; color: white;">0 Mismatches</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Quarantine: <span id="cc-quarantine-count">0</span></div>
+                    </div>
+
+                    <!-- Subsystem 3: Anomaly Sentinel -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">3. ANOMALY SENTINEL</span>
+                            <span id="cc-anomaly-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">NOMINAL</span>
+                        </div>
+                        <div id="cc-anomaly-details" style="font-size: 1.1rem; font-weight: bold; color: white;">0 Critical</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Auto-Halt Armed</div>
+                    </div>
+
+                    <!-- Subsystem 4: Portfolio Risk -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">4. PORTFOLIO RISK</span>
+                            <span id="cc-portfolio-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">COMPLIANT</span>
+                        </div>
+                        <div id="cc-portfolio-max-sec" style="font-size: 1.1rem; font-weight: bold; color: white;">Max Sec: 0%</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">VaR &lt; 5% | Cap 35%</div>
+                    </div>
+
+                    <!-- Subsystem 5: Model Champion-Challenger -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">5. AI MODEL HEALTH</span>
+                            <span id="cc-model-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">ACTIVE</span>
+                        </div>
+                        <div id="cc-champ-acc" style="font-size: 1.1rem; font-weight: bold; color: white;">Acc: --%</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Shadow Lead: <span id="cc-shadow-delta">0%</span></div>
+                    </div>
+
+                    <!-- Subsystem 6: Kill-Switch -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">6. CIRCUIT BREAKER</span>
+                            <span id="cc-killswitch-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">ARMED</span>
+                        </div>
+                        <div id="cc-killswitch-state" style="font-size: 1.1rem; font-weight: bold; color: #10b981;">STANDBY</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Safe Guard Active</div>
+                    </div>
+                </div>
+
+                <!-- Alert Reasons List (if any) -->
+                <div id="cc-reasons-container" style="display: none; margin-top: 8px; padding: 10px 14px; background: rgba(239, 68, 68, 0.1); border-left: 3px solid #ef4444; border-radius: 4px;">
+                    <span style="font-size: 0.8rem; font-weight: 600; color: #ef4444;">Active Risk Alerts:</span>
+                    <ul id="cc-reasons-list" style="margin: 4px 0 0 16px; padding: 0; font-size: 0.75rem; color: #fca5a5;"></ul>
+                </div>
+            </section>
+
+            <!-- Model Champion-Challenger & Rollback Panel -->
+            <section class="panel model-registry-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>AI Model Champion–Challenger & Shadow Rollback</h2>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span id="model-registry-badge" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 600; border: 1px solid #10b981;">🏆 Champion Active</span>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; padding: 0.75rem 0;">
+                    <!-- Champion Model Card -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 600; color: #60a5fa; font-size: 0.85rem;">ACTIVE CHAMPION</span>
+                            <span id="champ-version-badge" style="font-size: 0.7rem; background: #1e3a8a; color: #bfdbfe; padding: 2px 6px; border-radius: 4px;">v1.0</span>
+                        </div>
+                        <div id="champ-model-name" style="font-size: 1.1rem; font-weight: bold; color: white;">GradientBoost-Intraday-Alpha</div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px;">
+                            <div>
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">Rolling Accuracy (N=20)</div>
+                                <div id="champ-acc-val" style="font-size: 1.3rem; font-weight: bold; color: #10b981;">--%</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">Total Evaluations</div>
+                                <div id="champ-evals-val" style="font-size: 1.3rem; font-weight: bold; color: white;">0</div>
+                            </div>
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 8px;">
+                            Min accuracy safety threshold: <strong>45.0%</strong>
+                        </div>
+                    </div>
+
+                    <!-- Challenger Model Card (Shadow Mode) -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 600; color: #f59e0b; font-size: 0.85rem;">CHALLENGER (SHADOW MODE)</span>
+                            <span id="chall-version-badge" style="font-size: 0.7rem; background: #78350f; color: #fde68a; padding: 2px 6px; border-radius: 4px;">v2.0-rc</span>
+                        </div>
+                        <div id="chall-model-name" style="font-size: 1.1rem; font-weight: bold; color: white;">Hybrid-LSTM-Transformer</div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px;">
+                            <div>
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">Shadow Rolling Acc</div>
+                                <div id="chall-acc-val" style="font-size: 1.3rem; font-weight: bold; color: #f59e0b;">--%</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">Win Delta vs Champ</div>
+                                <div id="chall-delta-val" style="font-size: 1.3rem; font-weight: bold; color: white;">+0.0%</div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-size: 0.7rem; color: var(--text-muted);">Auto-Promote at &ge; +5% Lead</span>
+                            <button id="btn-promote-challenger" onclick="promoteChallenger()" style="padding: 4px 10px; font-size: 0.75rem; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">⚡ Promote Now</button>
+                        </div>
+                    </div>
+
+                    <!-- Fallback & Rollback Card -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 600; color: #ec4899; font-size: 0.85rem;">FALLBACK & CIRCUIT BREAKER</span>
+                            <span style="font-size: 0.7rem; background: #831843; color: #fbcfe8; padding: 2px 6px; border-radius: 4px;">STANDBY</span>
+                        </div>
+                        <div id="fallback-model-name" style="font-size: 1.1rem; font-weight: bold; color: white;">Rule-Based Deterministic Engine</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 8px; line-height: 1.4;">
+                            Automated failover engages if Champion accuracy drops below 45% or kill-switch is triggered (&lt; 35%).
+                        </div>
+                        <div style="margin-top: 14px; text-align: right;">
+                            <button id="btn-rollback-champion" onclick="rollbackChampion()" style="padding: 6px 12px; font-size: 0.75rem; background: #374151; color: white; border: 1px solid #4b5563; border-radius: 4px; cursor: pointer; font-weight: 600;">🔄 Rollback Champion</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Sector Concentration & VaR Risk Management Panel -->
+            <section class="panel sector-risk-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>Institutional Portfolio Risk & Sector Concentration</h2>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span id="var-risk-badge" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 600; border: 1px solid #10b981;">🛡️ 1-Day 95% VaR: Safe (&lt; 5%)</span>
+                        <span id="sector-risk-badge" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(59, 130, 246, 0.2); color: #60a5fa; font-weight: 600; border: 1px solid #3b82f6;">Sector Cap: 35% Max</span>
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; padding: 0.75rem 0;">
+                    <!-- VaR / CVaR Summary Card -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 600; color: var(--text-muted); font-size: 0.85rem;">PORTFOLIO VALUE AT RISK (VaR)</span>
+                            <span id="var-confidence-label" style="font-size: 0.75rem; color: var(--accent-blue);">95% Confidence</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                            <div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">Parametric 1-Day VaR</div>
+                                <div id="param-var-val" style="font-size: 1.25rem; font-weight: bold; color: #10b981;">0.00%</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">Expected Shortfall (CVaR)</div>
+                                <div id="param-cvar-val" style="font-size: 1.25rem; font-weight: bold; color: #f59e0b;">0.00%</div>
+                            </div>
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+                            <span>Historical VaR: <strong id="hist-var-val" style="color: white;">0.00%</strong></span> | 
+                            <span>CVaR: <strong id="hist-cvar-val" style="color: white;">0.00%</strong></span>
+                        </div>
+                    </div>
+
+                    <!-- Sector Exposure Breakdown -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 600; color: var(--text-muted); font-size: 0.85rem;">SECTOR ALLOCATION & CONCENTRATION</span>
+                            <span id="sector-compliance-status" style="font-size: 0.75rem; color: #10b981; font-weight: 600;">COMPLIANT</span>
+                        </div>
+                        <div id="sector-bars-container" style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">No open positions. Capital fully diversified.</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
             <!-- Audit Log Panel -->
             <section class="panel audit-log-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
-                <div class="panel-header">
-                    <h2>Audit Log & Order History</h2>
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>Audit Log & Cryptographic Order History</h2>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span id="audit-chain-badge" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 600; border: 1px solid #10b981;">🔒 SHA-256 Chain Verified</span>
+                        <button onclick="verifyAuditChain()" style="padding: 4px 8px; font-size: 0.75rem; background: #374151; color: white; border: none; border-radius: 4px; cursor: pointer;">Verify Integrity</button>
+                    </div>
                 </div>
                 
                 <div class="table-container" style="max-height: 400px; overflow-y: auto;">
@@ -214,6 +426,7 @@
         </main>
     </div>
 
-    <script src="/static/app.js?v=8"></script>
+    <script src="/static/app.js?v=10"></script>
 </body>
 </html>
+

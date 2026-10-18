@@ -258,5 +258,135 @@ async def test_paper_trading_validation_endpoints(client):
     assert snap_resp.json()["status"] == "success"
     assert snap_resp.json()["snapshot"]["date_str"] == "2026-10-15"
 
+@pytest.mark.anyio
+async def test_audit_chain_verification_endpoint(client):
+    # Log an event using the runtime function
+    app.main.log_audit_event("E2E_TEST_EVENT", "t_audit_1", "INFY", "BUY", "E2E audit chain verification test")
+
+    # Verify audit chain integrity
+    verify_resp = await client.get("/api/v1/system/audit/verify")
+    assert verify_resp.status_code == 200
+    report = verify_resp.json()
+    assert report["is_valid"] is True
+    assert report["total_events"] >= 1
+    assert report["last_hash"] != "0000000000000000000000000000000000000000000000000000000000000000"
+
+    # Fetch recent chain records
+    chain_resp = await client.get("/api/v1/system/audit/chain?limit=10")
+    assert chain_resp.status_code == 200
+    chain_data = chain_resp.json()
+    assert chain_data["status"] == "success"
+    assert len(chain_data["records"]) >= 1
+    latest_block = chain_data["records"][-1]
+    assert "event" in latest_block
+    assert "hash" in latest_block
+    assert "previous_hash" in latest_block["event"]
+
+@pytest.mark.anyio
+async def test_risk_sectors_endpoint(client):
+    resp = await client.get("/api/v1/system/risk/sectors")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert "compliant" in data
+    assert data["max_sector_exposure_pct"] == 0.35
+    assert "sectors" in data
+    assert "portfolio_capital" in data
+
+@pytest.mark.anyio
+async def test_risk_var_endpoint(client):
+    resp = await client.get("/api/v1/system/risk/var?confidence=0.95")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["confidence"] == 0.95
+    assert "historical" in data
+    assert "parametric" in data
+    assert "is_safe" in data
+    assert data["max_var_pct"] == 0.05
+    assert data["max_cvar_pct"] == 0.08
+
+@pytest.mark.anyio
+async def test_models_status_endpoint(client):
+    resp = await client.get("/api/v1/system/models/status")
+    assert resp.status_code == 200
+    res_json = resp.json()
+    assert res_json["status"] == "success"
+    data = res_json["data"]
+    assert "health_status" in data
+    assert "champion" in data
+    assert "challenger" in data
+    assert "fallback" in data
+
+@pytest.mark.anyio
+async def test_models_promote_and_rollback_endpoint(client):
+    # Promote Challenger
+    prom_resp = await client.post("/api/v1/system/models/promote", json={"reason": "E2E promotion test"})
+    assert prom_resp.status_code == 200
+    prom_data = prom_resp.json()
+    assert prom_data["status"] == "success"
+    assert "new_champion" in prom_data
+
+    # Rollback Champion
+    roll_resp = await client.post("/api/v1/system/models/rollback", json={"reason": "E2E rollback test"})
+    assert roll_resp.status_code == 200
+    roll_data = roll_resp.json()
+    assert roll_data["status"] == "success"
+    assert "active_model" in roll_data
+
+@pytest.mark.anyio
+async def test_models_register_endpoint(client):
+    payload = {
+        "model_id": "test_lstm_v2",
+        "name": "LSTM-Attention-Classifier",
+        "version": "v2.0",
+        "role": "CHALLENGER",
+        "description": "Deep sequence model for intraday micro-reversals"
+    }
+    resp = await client.post("/api/v1/system/models/register", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["model"]["model_id"] == "test_lstm_v2"
+
+@pytest.mark.anyio
+async def test_unified_risk_center_endpoints(client):
+    # 1. Fetch unified status
+    status_resp = await client.get("/api/v1/system/risk-center/status")
+    assert status_resp.status_code == 200
+    data = status_resp.json()
+    assert data["status"] == "success"
+    risk_data = data["data"]
+    assert risk_data["overall_state"] in ["SAFE", "WARNING", "HALTED"]
+    assert "subsystems" in risk_data
+    assert "audit_chain" in risk_data["subsystems"]
+    assert "reconciliation" in risk_data["subsystems"]
+    assert "anomaly_sentinel" in risk_data["subsystems"]
+    assert "portfolio_risk" in risk_data["subsystems"]
+    assert "model_registry" in risk_data["subsystems"]
+    assert "kill_switch" in risk_data["subsystems"]
+
+    # 2. Trigger emergency halt
+    halt_resp = await client.post("/api/v1/system/risk-center/halt", json={"reason": "E2E testing halt", "triggered_by": "E2E_RUNNER"})
+    assert halt_resp.status_code == 200
+    assert halt_resp.json()["status"] == "HALTED"
+
+    # Status should reflect HALTED
+    status_after_halt = await client.get("/api/v1/system/risk-center/status")
+    assert status_after_halt.json()["data"]["overall_state"] == "HALTED"
+
+    # 3. Invalid resume rejected
+    bad_res = await client.post("/api/v1/system/risk-center/resume", json={"confirmation": "INVALID"})
+    assert bad_res.status_code == 400
+
+    # 4. Valid resume clears halt
+    good_res = await client.post("/api/v1/system/risk-center/resume", json={"confirmation": "CONFIRM_RESUME", "authorized_by": "E2E_ADMIN"})
+    assert good_res.status_code == 200
+    assert good_res.json()["status"] == "RESUMED"
+
+
+
+
+
 
 

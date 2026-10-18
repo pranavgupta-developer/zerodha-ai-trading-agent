@@ -82,3 +82,50 @@ def test_build_stock_ranking(quant_engine):
     # AAPL and GOOG should be ranked higher than MSFT
     assert ranking.index[0] in ['AAPL', 'GOOG']
     assert ranking.index[-1] == 'MSFT'
+
+def test_calculate_var_cvar_historical(quant_engine):
+    # Simulated daily returns with known tail
+    np.random.seed(42)
+    returns = pd.Series(np.random.normal(0.001, 0.02, 500))
+    res_95 = quant_engine.calculate_var_cvar(returns, confidence=0.95, portfolio_value=100000.0, method="historical")
+    
+    assert res_95["confidence"] == 0.95
+    assert res_95["method"] == "historical"
+    assert res_95["var_pct"] > 0
+    assert res_95["cvar_pct"] >= res_95["var_pct"]
+    assert res_95["var_amount"] == pytest.approx(res_95["var_pct"] * 100000.0, rel=1e-2)
+    assert res_95["cvar_amount"] >= res_95["var_amount"]
+
+def test_calculate_var_cvar_parametric(quant_engine):
+    np.random.seed(42)
+    returns = pd.Series(np.random.normal(0.0005, 0.015, 500))
+    res_param = quant_engine.calculate_var_cvar(returns, confidence=0.95, portfolio_value=500000.0, method="parametric")
+    
+    assert res_param["confidence"] == 0.95
+    assert res_param["method"] == "parametric"
+    assert res_param["var_pct"] > 0
+    assert res_param["cvar_pct"] >= res_param["var_pct"]
+    assert res_param["var_amount"] > 0
+
+def test_calculate_var_cvar_empty_or_small(quant_engine):
+    empty_series = pd.Series([], dtype=float)
+    res = quant_engine.calculate_var_cvar(empty_series)
+    assert res["var_pct"] == 0.0
+    assert res["cvar_pct"] == 0.0
+
+def test_calculate_portfolio_var_cvar(quant_engine):
+    np.random.seed(42)
+    dates = pd.date_range('2024-01-01', periods=100)
+    returns_df = pd.DataFrame({
+        'HDFCBANK': np.random.normal(0.0005, 0.015, 100),
+        'TCS': np.random.normal(0.0008, 0.012, 100),
+        'RELIANCE': np.random.normal(0.0003, 0.018, 100),
+    }, index=dates)
+    
+    weights = {'HDFCBANK': 0.5, 'TCS': 0.3, 'RELIANCE': 0.2}
+    res = quant_engine.calculate_portfolio_var_cvar(weights, returns_df, confidence=0.95, portfolio_value=1000000.0)
+    
+    assert res["var_pct"] > 0
+    assert res["cvar_pct"] >= res["var_pct"]
+    assert res["var_amount"] == pytest.approx(res["var_pct"] * 1000000.0, rel=1e-2)
+
