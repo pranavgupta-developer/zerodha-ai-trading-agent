@@ -93,6 +93,7 @@ class RiskConfig(BaseModel):
     # Sector concentration controls
     check_sector_exposure: bool = True       # Enforce sector limits
     max_sector_exposure_pct: float = 0.35    # Max fraction of portfolio in any single sector (35%)
+    max_sector_allocation_pct: float = 35.0  # Max percentage in single sector for UnifiedRiskCenter
     sector_map: Dict[str, str] = Field(default_factory=dict) # Custom overrides
     # Portfolio VaR/CVaR controls
     enforce_var_limits: bool = False         # Enforce portfolio VaR/CVaR caps
@@ -156,6 +157,49 @@ class RiskEngine:
             "max_sector_exposure_pct": self.config.max_sector_exposure_pct,
             "sectors": result
         }
+
+    def calculate_sector_exposure(self, positions: Any) -> Dict[str, float]:
+        """Calculates percentage exposure per sector for given positions.
+        Returns a dict mapping sector name to percentage (e.g., {'IT': 20.0, 'BANKING_FINANCIAL': 15.0}).
+        """
+        if not positions:
+            return {}
+
+        sector_totals: Dict[str, float] = {}
+        total_val = 0.0
+
+        if isinstance(positions, dict):
+            for sym, val in positions.items():
+                v = abs(float(val))
+                if v <= 0:
+                    continue
+                sec = self.get_sector(str(sym))
+                sector_totals[sec] = sector_totals.get(sec, 0.0) + v
+                total_val += v
+        elif isinstance(positions, list):
+            for p in positions:
+                sym = None
+                val = 0.0
+                if isinstance(p, dict):
+                    sym = p.get("tradingsymbol") or p.get("symbol")
+                    qty = abs(float(p.get("quantity", 0) or p.get("net_quantity", 0)))
+                    price = float(p.get("last_price", 0) or p.get("close_price", 0) or p.get("average_price", 0) or 1.0)
+                    val = float(p.get("value", 0)) or (qty * price)
+                else:
+                    sym = getattr(p, "symbol", getattr(p, "tradingsymbol", None))
+                    qty = abs(float(getattr(p, "quantity", 0)))
+                    price = float(getattr(p, "current_price", getattr(p, "entry_price", 0)) or 1.0)
+                    val = float(getattr(p, "value", 0)) or (qty * price)
+
+                if sym and val > 0:
+                    sec = self.get_sector(str(sym))
+                    sector_totals[sec] = sector_totals.get(sec, 0.0) + val
+                    total_val += val
+
+        if total_val <= 0:
+            return {}
+
+        return {sec: round((val / total_val) * 100.0, 2) for sec, val in sector_totals.items()}
 
     def get_portfolio_var_cvar(
         self,

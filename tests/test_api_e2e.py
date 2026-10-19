@@ -79,9 +79,9 @@ async def test_trade_action_approve_pipeline(client):
         "id": trade_id,
         "symbol": "TATASTEEL",
         "action": "BUY",
-        "price": 150.0,
-        "stop_loss": 145.0,
-        "take_target": 160.0,
+        "price": 174.0,
+        "stop_loss": 170.0,
+        "take_target": 182.0,
         "qty": 10,
         "reasoning": "Bullish breakout signal"
     }

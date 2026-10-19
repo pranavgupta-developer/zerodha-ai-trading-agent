@@ -27,6 +27,7 @@ class AgentService:
                 self.client = None
         else:
             self.client = None
+        self._quota_exhausted_until = 0.0
 
     def _generate_technical_reasoning(self, signal: Signal, indicators: Dict[str, Any]) -> str:
         rsi = indicators.get("rsi_14", 50.0)
@@ -66,7 +67,8 @@ class AgentService:
             
         approval_req = not getattr(settings, "AUTONOMOUS_EXECUTION", True)
 
-        if not self.client:
+        import time
+        if not self.client or time.time() < self._quota_exhausted_until:
             reasoning = self._generate_technical_reasoning(signal, indicators)
             return CandidateTrade(
                 symbol=signal.symbol,
@@ -75,7 +77,7 @@ class AgentService:
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
                 take_target=signal.take_target,
-                confidence_score=0.88,
+                confidence_score=0.75,
                 reasoning=reasoning,
                 approval_required=approval_req
             )
@@ -100,7 +102,7 @@ class AgentService:
             })
         )
 
-        for model_name in ["gemini-flash-latest", "gemini-3.8-flash"]:
+        for model_name in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest"]:
             try:
                 response = self.client.models.generate_content(
                     model=model_name,
@@ -116,6 +118,11 @@ class AgentService:
                 parsed_json["approval_required"] = approval_req
                 return CandidateTrade(**parsed_json)
             except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    logger.warning(f"Gemini quota exhausted. Enabling 3-minute backoff to prevent loop stalling.")
+                    self._quota_exhausted_until = time.time() + 180.0
+                    break
                 logger.warning(f"Gemini call with {model_name} failed: {e}")
 
         # Fallback to rich technical reasoning
@@ -127,7 +134,7 @@ class AgentService:
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
             take_target=signal.take_target,
-            confidence_score=0.85,
+            confidence_score=0.75,
             reasoning=reasoning,
             approval_required=approval_req
         )

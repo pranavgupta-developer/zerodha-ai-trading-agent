@@ -42,5 +42,8 @@ A Python/FastAPI automated trading agent using the Zerodha Kite Connect API. The
 5. **Access the Dashboard:**
    Open `http://127.0.0.1:8000/dashboard` in your browser to monitor trading activity and manage positions.
 
-## Operational Procedures
-For detailed procedures on starting, stopping, and handling emergencies in a live environment, refer to the [RUNBOOK.md](RUNBOOK.md).
+## Documentation & Technical Manuals
+- **[PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md):** Complete master technical specification, system architecture, quantitative indicator formulas, risk firewall rules, ML Champion–Challenger registry, and API reference.
+- **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md):** High-level summary of architecture, workflows, and test coverage.
+- **[RUNBOOK.md](RUNBOOK.md):** Operational procedures for live market trading sessions and emergency drills.
+
