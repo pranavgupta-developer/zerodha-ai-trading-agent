@@ -339,9 +339,12 @@ DATABASE_URL=sqlite:///./trading_agent.db
 
 ## 8. Test Suite & Verification
 
-The system includes **169 comprehensive unit and integration tests** verifying all critical paths:
-* Circuit limits, liquidity gates, and statutory fee calculations.
+The system includes **180 comprehensive unit and integration tests** verifying all critical paths across 34 test files:
+* Circuit limits, liquidity gates, and pre-trade statutory fee hurdle calculations.
 * Model registry auto-promotion, rollback, and Brier score evaluation.
+* Signal Quality Scoring (0–100) and Cross-Sectional Trade Ranking.
+* Multi-Timeframe trend alignment and dynamic regime-based Stop-Loss/Take-Profit.
+* Continuous expected-return regression and rolling walk-forward retraining.
 * Tamper-evident audit chain hashing and tampering detection.
 * Broker adapter state recovery, idempotency, and reconciliation.
 
@@ -349,4 +352,4 @@ Run all tests via:
 ```bash
 venv/bin/pytest
 ```
-*Output: 169 passed in ~7.15s.*
+*Output: 180 passed in ~9.04s.*

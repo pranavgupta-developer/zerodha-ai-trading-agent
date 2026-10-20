@@ -100,6 +100,9 @@ class RiskConfig(BaseModel):
     max_portfolio_var_pct: float = 0.05      # Max 1-day VaR (5%)
     max_portfolio_cvar_pct: float = 0.08     # Max 1-day CVaR (8%)
     var_confidence: float = 0.95             # Confidence level for VaR/CVaR (95%)
+    # Transaction cost & friction controls
+    check_transaction_costs: bool = True     # Enforce pre-trade cost hurdle
+    min_profit_to_cost_ratio: float = 1.5    # Gross profit must exceed 1.5x round-trip charges
 
 
 class AccountState(BaseModel):
@@ -111,6 +114,38 @@ class AccountState(BaseModel):
     open_positions: Dict[str, float] = {}  # symbol -> position value in base currency
     orders_placed_today: int = 0
     orders_placed_last_minute: int = 0
+
+def calculate_statutory_charges(buy_price: float, sell_price: float, qty: int) -> Dict[str, float]:
+    """
+    Computes exact statutory Indian market charges for an intraday equity trade on Zerodha NSE:
+    - Brokerage: min(20.0, 0.0003 * turnover) per leg
+    - STT: 0.025% on sell leg
+    - Exchange turnover: 0.00325% on total turnover
+    - GST: 18% on (Brokerage + Exchange charges)
+    - SEBI charges: 0.0001% of total turnover
+    - Stamp duty: 0.003% on buy leg
+    """
+    buy_val = float(buy_price * qty)
+    sell_val = float(sell_price * qty)
+    turnover = buy_val + sell_val
+
+    brokerage = min(20.0, 0.0003 * buy_val) + min(20.0, 0.0003 * sell_val)
+    stt = 0.00025 * sell_val
+    exchange_charges = 0.0000325 * turnover
+    gst = 0.18 * (brokerage + exchange_charges)
+    sebi_charges = 0.000001 * turnover
+    stamp_duty = 0.00003 * buy_val
+
+    total_charges = brokerage + stt + exchange_charges + gst + sebi_charges + stamp_duty
+    return {
+        "brokerage": round(brokerage, 2),
+        "stt": round(stt, 2),
+        "exchange_charges": round(exchange_charges, 2),
+        "gst": round(gst, 2),
+        "sebi_charges": round(sebi_charges, 2),
+        "stamp_duty": round(stamp_duty, 2),
+        "total_charges": round(total_charges, 2)
+    }
 
 class RiskEngine:
     """
@@ -371,6 +406,22 @@ class RiskEngine:
                     spread_pct = spread / last_price
                     if spread_pct > self.config.max_slippage_pct:
                         return False, f"Slippage too high: bid-ask spread is {spread_pct*100:.2f}% (max {self.config.max_slippage_pct*100:.2f}%)"
+
+        # 10. Pre-Trade Transaction-Cost & Friction Hurdle Check
+        if self.config.check_transaction_costs and requested_qty > 0 and signal.entry_price > 0 and signal.take_target > 0:
+            target_diff = abs(signal.take_target - signal.entry_price)
+            gross_expected_profit = target_diff * requested_qty
+            charges = calculate_statutory_charges(signal.entry_price, signal.take_target, requested_qty)
+            total_charges = charges["total_charges"]
+            
+            # Allow minimum profit to cover round-trip transaction costs with hurdle multiplier
+            required_min_profit = total_charges * self.config.min_profit_to_cost_ratio
+            if gross_expected_profit < required_min_profit:
+                hurdle_ratio = (gross_expected_profit / total_charges) if total_charges > 0 else 0.0
+                return False, (
+                    f"COST_INEFFICIENT: Expected gross profit ₹{gross_expected_profit:.2f} does not overcome "
+                    f"round-trip transaction costs ₹{total_charges:.2f} (hurdle ratio {hurdle_ratio:.2f} < {self.config.min_profit_to_cost_ratio})"
+                )
 
         return True, "Approved"
 

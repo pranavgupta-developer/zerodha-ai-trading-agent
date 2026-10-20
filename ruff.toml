@@ -1,0 +1,17 @@
+target-version = "py311"
+line-length = 100
+
+[lint]
+select = ["E", "F", "B", "I", "UP", "N"]
+ignore = [
+    "E501",   # line-too-long — handled by formatter, not enforced as error
+    "B008",   # do not perform function calls in default arguments (FastAPI Depends uses this pattern)
+    "UP007",  # use X | Y for type annotations (keep Optional[] for Python 3.9 compat)
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["F811"]   # allow fixture re-declaration in test files
+
+[format]
+quote-style = "double"
+indent-style = "space"

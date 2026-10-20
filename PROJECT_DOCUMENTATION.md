@@ -549,17 +549,18 @@ Trading profitability in Indian markets requires rigorous transaction cost deduc
 
 ---
 
-## 8. Real-Time Market Data Engine & Zero-Simulation Guarantee
+## 8. Real-Time Market Data Engine & Zero-Simulation Architecture
 
-### 8.1 Elimination of Synthetic / Mock Ticks
-In earlier iterations, background market feeds included synthetic random walk jitter for offline testing. In version 1.2.0, **all simulated data generators have been completely removed**. The system enforces:
-1. When authenticated with Zerodha, all live quotes stream directly from the **KiteTicker WebSocket** in `MODE_FULL`.
-2. When Zerodha credentials are in `DRY_RUN` mode, live market quotes are continuously polled from genuine exchange feeds (10-second intervals).
-3. **Daily Previous Close Resolution:** The previous close calculation references yesterday's official daily closing price (`daily_prev_closes`), calculating authentic Day Change % instead of 1-minute delta shifts.
+### 8.1 Complete Elimination of Synthetic / Mock Market Data
+In accordance with production standards, **all simulated data generators, hardcoded price tables (`DEFAULT_BASE_PRICES`, `DEFAULT_PREV_CLOSES`), and artificial jitter algorithms have been completely eliminated**. The system strictly adheres to the following rules:
+1. **Direct Zerodha Kite Connect API Feed:** All live market quotes and market depth stream directly from Zerodha Kite Connect API v3 (`broker.get_quote()`) and the **KiteTicker WebSocket** in `MODE_FULL`.
+2. **Real Historical & Minute Candle Construction:** Indicators (EMA, RSI, VWAP, ATR, MTF) are built from real candles aggregated from live Zerodha ticks via [`CandleAggregator`](file:///Users/pranavgupta/Desktop/Capstone/app/broker/candle_aggregator.py) and Zerodha historical minute data (`broker.get_historical_data()`).
+3. **Official Exchange Previous Close:** Day Change % is calculated exclusively against Zerodha's official OHLC previous close (`quote_data["ohlc"]["close"]`), eliminating delta drift.
+4. **Explicit Authentication Gating (`ZERODHA_AUTH_REQUIRED`):** When the daily Zerodha session expires (06:00 AM IST cutoff) or is unauthenticated, the system halts trade generation and reports `ZERODHA_AUTH_REQUIRED` across REST and WebSocket APIs rather than fabricating mock data.
+5. **One-Click Session Activation:** Operators can re-authenticate anytime via `/api/v1/auth/login?redirect=true` or submit their daily token via `POST /api/v1/auth/token` directly from the dashboard modal.
 
-### 8.2 Top 50 Liquid Indian Equities Watchlist
-The active market cache tracks 50 of India's most liquid stocks with updated post-split baseline prices:
-- `RELIANCE` (~₹1,208), `TCS` (~₹2,459), `INFY` (~₹1,385), `HDFCBANK` (~₹1,675), `ICICIBANK` (~₹1,215), `TATASTEEL` (~₹174), `SBIN` (~₹785), `ITC` (~₹415), `BHARTIARTL` (~₹1,685), `LT` (~₹3,450), and 40 additional liquid constituents.
+### 8.2 Configurable Watchlist & Live Equities Tracking
+The active market cache dynamically resolves trading symbols from `settings.TRADING_SYMBOLS` (supporting all Nifty constituents) and auto-resolves instrument tokens using [`InstrumentMaster`](file:///Users/pranavgupta/Desktop/Capstone/app/broker/instrument_master.py) and Zerodha master instrument tables.
 
 ---
 
@@ -571,6 +572,7 @@ The active market cache tracks 50 of India's most liquid stocks with updated pos
 |---|---|---|---|
 | `/api/v1/auth/login` | `GET` | Initiates Zerodha OAuth flow. | Redirects to Kite Connect login portal. |
 | `/api/v1/auth/callback` | `GET` | Receives Kite `request_token`, exchanges for `access_token`. | Redirects to `/dashboard?auth=success`. |
+| `/api/v1/auth/token` | `POST` | Directly activates session using `access_token` or `request_token`. | Body: `{"token": "..."}`. Returns auth status. |
 | `/api/v1/portfolio` | `GET` | Returns cash balance, margin, open positions, holdings, and live watchlist. | Response: `PortfolioResponse` schema. |
 | `/api/v1/trades/action` | `POST` | Operator manual approval/rejection of a pending candidate trade. | Body: `{"trade_id": "...", "action": "APPROVE"}`. |
 | `/api/v1/positions/square-off-all` | `POST` | Emergency manual square-off of all open positions. | Returns count of exited positions. |
@@ -726,7 +728,7 @@ DATABASE_URL=sqlite:///./trading_agent.db
 
 ## 13. Test Suite & Verification
 
-The project includes **169 comprehensive automated unit and integration tests** verifying all critical paths across 31 test files.
+The project includes **180 comprehensive automated unit and integration tests** verifying all critical paths across 34 test files.
 
 ### Running the Test Suite
 ```bash
@@ -735,9 +737,13 @@ pytest -v
 ```
 
 ### Key Areas Tested
-- **Risk Firewall:** Circuit limit boundaries, liquidity thresholds, maximum order value, sector concentration caps.
+- **Risk Firewall:** Circuit limit boundaries, liquidity thresholds, maximum order value, sector concentration caps, pre-trade cost hurdle.
 - **Broker Adapter:** OAuth exchange, order state transitions, idempotency guards, retry mechanisms.
 - **Model Registry:** Champion–Challenger shadow evaluation, auto-promotion thresholds, auto-rollback rules.
+- **Signal Quality Scoring:** 0–100 composite multi-factor evaluation (trend, momentum, volume, ML conviction, regime).
+- **Trade Ranking & Selection:** Cross-sectional ranking by risk-adjusted return and available margin budgeting.
+- **Multi-Timeframe & Regime Strategy:** 15m/1m trend alignment, regime gating, and dynamic ATR stop-loss and take-profit adaptation.
+- **Walk-Forward Retraining:** Rolling historical train/test evaluation and continuous expected-return regression.
 - **Cryptographic Audit:** SHA-256 hash chaining, block genesis, tampering detection.
 - **Indicators & Quant Math:** Exact mathematical verification of EMA, RSI, ATR, VWAP, Sharpe ratio, and drawdowns.
 - **Statutory Costs:** Accurate deduction of Zerodha brokerage, STT, GST, and turnover charges.

@@ -22,13 +22,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install httpx anyio scikit-learn pandas numpy xgboost
+          pip install -r requirements-dev.txt
 
-      - name: Run Pytest Suite
+      - name: Lint with Ruff
+        run: ruff check app/ tests/
+
+      - name: Run Pytest with Coverage
         env:
           TRADING_MODE: DRY_RUN
           KITE_API_KEY: mock_key
           KITE_API_SECRET: mock_secret
         run: |
-          pytest --verbose
+          pytest --cov=app --cov-report=term-missing --cov-fail-under=70 --verbose

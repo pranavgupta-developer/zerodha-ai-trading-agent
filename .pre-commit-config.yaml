@@ -1,0 +1,24 @@
+repos:
+  # Fast Python linter + formatter (replaces flake8, isort, pyupgrade)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      - id: ruff
+        args: [--fix, --select, "E,F,B,I"]
+        #   E = pycodestyle style errors
+        #   F = pyflakes (undefined names, unused imports)
+        #   B = flake8-bugbear (catches bare except:, mutable defaults, etc.)
+        #   I = isort (import ordering)
+
+  # Standard safety hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: detect-private-key        # blocks API keys / secrets from being committed
+      - id: check-added-large-files   # blocks committing app.log etc.
+        args: [--maxkb=500]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-yaml

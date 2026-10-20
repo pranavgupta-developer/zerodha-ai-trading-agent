@@ -43,16 +43,42 @@ class BrokerAdapter:
         self._access_token: Optional[str] = None
         self._dry_run_file = "dry_run_state.json"
         
-        # Recover dev session
+        # Recover dev session from settings or disk
         try:
-            import os
-            if os.path.exists(".kite_session"):
+            if getattr(settings, "KITE_ACCESS_TOKEN", None) and settings.KITE_ACCESS_TOKEN != "fake_token":
+                self.set_access_token(settings.KITE_ACCESS_TOKEN)
+            elif os.path.exists(".kite_session"):
                 with open(".kite_session", "r") as f:
                     token = f.read().strip()
                     if token and token != "fake_token":
                         self.set_access_token(token)
         except Exception:
             pass
+
+    _auth_cached_at: float = 0.0
+    _is_auth_cached: bool = False
+
+    def is_authenticated(self, force_check: bool = False) -> bool:
+        """
+        Verifies if a valid Zerodha Kite Connect access token is active.
+        Caches verification for 60 seconds to avoid spamming the profile endpoint.
+        """
+        if not self._access_token or self._access_token.startswith("fake_"):
+            return False
+            
+        now = time.time()
+        if not force_check and (now - self._auth_cached_at < 60.0):
+            return self._is_auth_cached
+
+        try:
+            self.kite.profile()
+            self._is_auth_cached = True
+            self._auth_cached_at = now
+            return True
+        except Exception:
+            self._is_auth_cached = False
+            self._auth_cached_at = now
+            return False
 
     def _load_dry_run_state(self) -> Dict[str, Any]:
         if os.path.exists(self._dry_run_file):
@@ -95,9 +121,12 @@ class BrokerAdapter:
             with open(".kite_session", "w") as f:
                 f.write(self._access_token)
                 
+            self._auth_cached_at = 0.0
             logger.info("Successfully generated session and set access token.")
             return session_data # type: ignore
         except kite_exc.TokenException as e:
+            self._is_auth_cached = False
+            self._auth_cached_at = time.time()
             logger.error(f"Token exception during session generation: {str(e)}")
             raise
         except Exception as e:
@@ -110,6 +139,7 @@ class BrokerAdapter:
         """
         self._access_token = access_token
         self.kite.set_access_token(self._access_token)
+        self._auth_cached_at = 0.0
         
     def get_profile(self) -> Dict[str, Any]:
         """
@@ -337,25 +367,44 @@ class BrokerAdapter:
             raise
 
     @broker_retry(retries=3, delay=1.0)
+    def get_historical_data(
+        self,
+        instrument_token: int,
+        from_date: Any,
+        to_date: Any,
+        interval: str = "minute"
+    ) -> list[Dict[str, Any]]:
+        """
+        Fetches historical OHLCV data directly from Zerodha Kite Connect API.
+        """
+        self._ensure_authenticated()
+        try:
+            return self.kite.historical_data(
+                instrument_token=instrument_token,
+                from_date=from_date,
+                to_date=to_date,
+                interval=interval
+            )
+        except Exception as e:
+            logger.warning(f"Error fetching historical data for token {instrument_token}: {e}")
+            raise
+
+    @broker_retry(retries=3, delay=1.0)
     def get_quote(self, symbols: list[str]) -> Dict[str, Any]:
         """
-        Fetches full market quotes for a list of instruments (e.g. ['NSE:RELIANCE']).
-        Returns a dict mapping instrument token/symbol to its quote data (OHLC, depth, volume, circuit limits).
+        Fetches live market quotes for instruments (e.g. ['NSE:RELIANCE', 'NSE:TCS']) directly from Zerodha.
+        Returns quote dictionary mapping symbol to LTP, OHLC, volume, circuit limits, and market depth.
         """
-        if settings.TRADING_MODE == "DRY_RUN":
-            if self._access_token:
-                try:
-                    return self.kite.quote(symbols) # type: ignore
-                except Exception:
-                    pass
-            # Return empty dict so system uses real market data candles from yfinance
+        if not self._access_token or self._access_token.startswith("fake_"):
             return {}
-                
-        self._ensure_authenticated()
         try:
             return self.kite.quote(symbols) # type: ignore
         except Exception as e:
             err_msg = str(e)
-            if "Insufficient permission" not in err_msg:
-                logger.error(f"Error fetching quote for {symbols}: {err_msg}")
-            raise
+            if "TokenException" in err_msg or "invalid" in err_msg.lower() or "expire" in err_msg.lower():
+                self._is_auth_cached = False
+                self._auth_cached_at = time.time()
+                logger.warning("Zerodha access token expired. Please re-authenticate.")
+            else:
+                logger.warning(f"Error fetching live Zerodha quote: {err_msg}")
+            return {}

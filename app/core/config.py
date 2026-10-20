@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     # Kite Connect Settings
     KITE_API_KEY: str
     KITE_API_SECRET: str
+    KITE_ACCESS_TOKEN: str | None = None
     KITE_REDIRECT_URL: str = "http://localhost:8000/api/v1/auth/callback"
     
     # Database Settings

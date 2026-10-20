@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional, Tuple, Any
+from typing import List, Optional, Tuple, Any, Dict
 from app.trading.signals import Signal, SignalDirection
 from app.trading.strategy import EmaRsiVwapStrategy
 from app.agent.schemas import CandidateTrade
@@ -7,13 +7,14 @@ from app.agent.service import AgentService
 from app.trading.risk_engine import RiskEngine, AccountState
 from app.trading.order_manager import OrderManager, ManagedOrder
 from app.trading.position_sizer import DynamicPositionSizer
+from app.trading.signal_scorer import SignalQualityScorer
 
 logger = logging.getLogger(__name__)
 
 class TradingPipeline:
     """
     Orchestrates the entire trading flow:
-    Data -> Strategy -> AI Agent -> Dynamic Sizing -> Risk Engine -> Order Manager
+    Data -> Strategy (Regime + MTF) -> AI Agent -> Quality Scoring -> Dynamic Sizing -> Risk Engine -> Order Manager
     """
     def __init__(
         self, 
@@ -23,7 +24,9 @@ class TradingPipeline:
         order_manager: OrderManager,
         position_sizer: Optional[DynamicPositionSizer] = None,
         anomaly_detector: Optional[Any] = None,
-        model_registry: Optional[Any] = None
+        model_registry: Optional[Any] = None,
+        signal_scorer: Optional[SignalQualityScorer] = None,
+        min_quality_threshold: float = 50.0
     ):
         self.strategy = strategy
         self.agent = agent
@@ -32,6 +35,8 @@ class TradingPipeline:
         self.position_sizer = position_sizer or DynamicPositionSizer()
         self.anomaly_detector = anomaly_detector
         self.model_registry = model_registry
+        self.signal_scorer = signal_scorer or SignalQualityScorer(min_quality_threshold=min_quality_threshold)
+        self.min_quality_threshold = min_quality_threshold
 
     def process_tick(
         self, 
@@ -40,16 +45,33 @@ class TradingPipeline:
         market_snapshot: dict,
         indicators: dict,
         account_state: AccountState,
-        quote_data: Optional[Dict[str, Any]] = None
+        quote_data: Optional[Dict[str, Any]] = None,
+        mtf_candles: Optional[List[Any]] = None,
+        market_regime: Optional[str] = None
     ) -> Tuple[Optional[CandidateTrade], Optional[ManagedOrder], str]:
         """
         Runs the full pipeline for a new tick/candle.
         Returns (CandidateTrade, ManagedOrder, StatusMessage)
         """
-        # 1. Strategy Signal
-        signal = self.strategy.generate_signal(symbol, candles)
+        # 1. Strategy Signal with Market Regime and Multi-Timeframe Alignment
+        signal = self.strategy.generate_signal(
+            symbol=symbol, 
+            candles=candles, 
+            mtf_candles=mtf_candles, 
+            market_regime=market_regime
+        )
         if signal.direction == SignalDirection.HOLD:
-            return None, None, "Strategy generated HOLD."
+            return None, None, f"Strategy generated HOLD: {signal.reason}"
+
+        # 1b. Signal Quality Scoring (0-100 Multi-Factor Score)
+        score_res = self.signal_scorer.calculate_score(
+            signal=signal,
+            indicators=indicators or market_snapshot,
+            candles=candles,
+            ml_confidence=signal.confidence,
+            expected_return_pct=signal.expected_return_pct
+        )
+        signal.quality_score = score_res.total_score
 
         # 2. AI Agent Evaluation
         candidate_trade = self.agent.evaluate_trade(
@@ -58,17 +80,31 @@ class TradingPipeline:
             indicators=indicators,
             account_state=account_state
         )
+        candidate_trade.quality_score = score_res.total_score
+        candidate_trade.market_regime = signal.market_regime
+        candidate_trade.expected_return_pct = signal.expected_return_pct
         
         if candidate_trade.direction == SignalDirection.HOLD:
             return candidate_trade, None, f"AI Agent rejected trade: {candidate_trade.reasoning}"
 
-        # 2b. Dynamic Capital Allocation & Position Sizing
+        # Quality Gate Check
+        if self.min_quality_threshold > 0.0 and not score_res.is_high_quality:
+            return candidate_trade, None, f"Quality Gate rejected trade: {score_res.rationale}"
+
+        # account_equity should represent total portfolio value, not just free cash.
+        # Using available_margin alone causes position sizing to shrink as positions are opened,
+        # leading to under-sizing for late-day trades and miscalibrated risk percentages.
+        total_equity = (
+            account_state.available_margin
+            + account_state.unrealized_pnl
+            + account_state.realized_pnl
+        )
         atr_val = indicators.get("atr_14") if indicators else None
         alloc = self.position_sizer.calculate_allocation(
             symbol=candidate_trade.symbol,
             entry_price=candidate_trade.entry_price,
             stop_loss=candidate_trade.stop_loss,
-            account_equity=account_state.available_margin,
+            account_equity=total_equity,
             atr=atr_val,
             confidence=candidate_trade.confidence_score,
             available_margin=account_state.available_margin
@@ -91,8 +127,7 @@ class TradingPipeline:
         if candidate_trade.approval_required:
             return candidate_trade, None, "Awaiting operator approval."
 
-        # 3. Risk Engine Validation
-        # Construct risk signal from CandidateTrade
+        # 3. Risk Engine Validation (including pre-trade cost hurdle)
         risk_signal = Signal(
             symbol=candidate_trade.symbol,
             direction=candidate_trade.direction,
@@ -100,7 +135,12 @@ class TradingPipeline:
             entry_price=candidate_trade.entry_price,
             stop_loss=candidate_trade.stop_loss,
             take_target=candidate_trade.take_target,
-            reason=candidate_trade.reasoning
+            reason=candidate_trade.reasoning,
+            strategy_version=signal.strategy_version,
+            market_regime=signal.market_regime,
+            quality_score=score_res.total_score,
+            expected_return_pct=signal.expected_return_pct,
+            mtf_confirmed=signal.mtf_confirmed
         )
         
         is_approved, risk_reason = self.risk_engine.validate_signal(risk_signal, account_state, candidate_trade.qty, quote_data)

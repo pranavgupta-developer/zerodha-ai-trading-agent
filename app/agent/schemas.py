@@ -20,3 +20,6 @@ class CandidateTrade(BaseModel):
     risk_budget: Optional[float] = Field(None, description="Rupee amount risked between entry and stop-loss")
     risk_pct: Optional[float] = Field(None, description="Percentage of total portfolio equity risked")
     sizing_rationale: Optional[str] = Field(None, description="Explanation of dynamic position sizing")
+    market_regime: Optional[str] = Field(None, description="Market regime at entry")
+    quality_score: Optional[float] = Field(None, description="Composite signal quality score (0-100)")
+    expected_return_pct: Optional[float] = Field(None, description="Model-predicted expected return %")

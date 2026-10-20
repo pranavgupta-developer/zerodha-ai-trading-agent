@@ -15,6 +15,10 @@ class Signal(BaseModel):
     take_target: float
     reason: str = ""
     strategy_version: str = "v1.0"
+    market_regime: str = "UNKNOWN"
+    quality_score: float = 0.0
+    expected_return_pct: float = 0.0
+    mtf_confirmed: bool = False
 
 class Prediction(BaseModel):
     symbol: str
@@ -22,3 +26,4 @@ class Prediction(BaseModel):
     confidence: float
     model_used: str
     target_period: int
+    expected_return_pct: float = 0.0

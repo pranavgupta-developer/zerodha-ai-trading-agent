@@ -26,6 +26,11 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; type: 'success' | 'danger' } | null>(null);
+  const [zerodhaAuth, setZerodhaAuth] = useState(false);
+  const [zerodhaLoginUrl, setZerodhaLoginUrl] = useState('');
+  const [showTokenModal, setShowTokenModal] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [submittingToken, setSubmittingToken] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -35,8 +40,10 @@ export default function App() {
     connectWebSocket();
 
     const auditTimer = setInterval(fetchAuditLogs, 4000);
+    const statusTimer = setInterval(fetchSystemStatus, 10000);
     return () => {
       clearInterval(auditTimer);
+      clearInterval(statusTimer);
       if (wsRef.current) wsRef.current.close();
     };
   }, []);
@@ -51,8 +58,37 @@ export default function App() {
       const res = await fetch(`${API_BASE}/system/status`);
       const data = await res.json();
       setSystemState(data.emergency_stop_active ? 'HALTED' : 'LIVE');
+      setZerodhaAuth(Boolean(data.zerodha_authenticated));
+      setZerodhaLoginUrl(data.login_url || '');
     } catch (e) {
       console.error("Failed to fetch system status", e);
+    }
+  };
+
+  const handleConnectToken = async () => {
+    if (!tokenInput.trim()) return;
+    setSubmittingToken(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: tokenInput.trim() })
+      });
+      const data = await res.json();
+      if (res.ok && data.status === 'success') {
+        showToast('Zerodha session verified & live feed connected!', 'success');
+        setZerodhaAuth(true);
+        setShowTokenModal(false);
+        setTokenInput('');
+        fetchPortfolio();
+        fetchSystemStatus();
+      } else {
+        showToast(data.detail || 'Failed to authenticate token with Zerodha', 'danger');
+      }
+    } catch (e) {
+      showToast('Error sending token to server', 'danger');
+    } finally {
+      setSubmittingToken(false);
     }
   };
 
@@ -231,6 +267,81 @@ export default function App() {
         </div>
       )}
 
+      {/* Zerodha Auth Modal */}
+      {showTokenModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          backdropFilter: 'blur(6px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div className="glass-panel" style={{ width: '440px', padding: '24px', borderRadius: '12px', border: '1px solid var(--border)' }}>
+            <h3 style={{ margin: '0 0 12px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Activity size={20} color="var(--accent-primary)" />
+              Connect Zerodha Kite Live Feed
+            </h3>
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px', lineHeight: 1.5 }}>
+              To stream genuine live market ticks and execute trades on Zerodha without simulation, authenticate your daily Kite session.
+            </p>
+            <div style={{ marginBottom: '16px' }}>
+              <a
+                href={zerodhaLoginUrl || "http://localhost:8000/api/v1/auth/login?redirect=true"}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-primary"
+                style={{ display: 'block', textAlign: 'center', padding: '10px 16px', textDecoration: 'none', marginBottom: '12px' }}
+              >
+                1-Click Login via Zerodha Kite ↗
+              </a>
+              <div style={{ textAlign: 'center', fontSize: '11px', color: 'var(--text-muted)', margin: '8px 0' }}>
+                — OR PASTE DAILY ACCESS TOKEN —
+              </div>
+              <input
+                type="text"
+                placeholder="Paste Access Token / Request Token..."
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: '6px',
+                  background: 'rgba(255,255,255,0.05)',
+                  border: '1px solid var(--border)',
+                  color: '#fff',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  fontSize: '12px',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button
+                onClick={() => setShowTokenModal(false)}
+                className="btn btn-outline"
+                style={{ padding: '8px 16px', fontSize: '12px' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConnectToken}
+                disabled={!tokenInput.trim() || submittingToken}
+                className="btn btn-primary"
+                style={{ padding: '8px 16px', fontSize: '12px' }}
+              >
+                {submittingToken ? 'Verifying...' : 'Submit Token'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar */}
       <aside className="sidebar glass-panel" style={{ borderRadius: 0, borderTop: 0, borderBottom: 0, borderLeft: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
@@ -247,6 +358,36 @@ export default function App() {
                 <div className={`pulse-dot ${systemState === 'HALTED' ? 'danger' : ''}`}></div>
                 {systemState}
               </span>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ color: 'var(--text-secondary)' }}>Zerodha Feed</span>
+              {zerodhaAuth ? (
+                <span className="status-badge status-live" title="Streaming real-time live market ticks directly from Zerodha Kite Connect">
+                  <div className="pulse-dot"></div> ZERODHA LIVE
+                </span>
+              ) : (
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <a 
+                    href={zerodhaLoginUrl || "http://localhost:8000/api/v1/auth/login?redirect=true"} 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="status-badge status-warning"
+                    style={{ textDecoration: 'none', cursor: 'pointer', padding: '3px 8px', fontSize: '11px' }}
+                    title="Authenticate with Zerodha Kite"
+                  >
+                    <div className="pulse-dot danger"></div> AUTH REQ ↗
+                  </a>
+                  <button
+                    onClick={() => setShowTokenModal(true)}
+                    className="btn btn-secondary"
+                    style={{ padding: '3px 8px', fontSize: '11px', borderRadius: '4px' }}
+                    title="Paste Daily Access Token"
+                  >
+                    Token
+                  </button>
+                </div>
+              )}
             </div>
             
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -474,17 +615,24 @@ export default function App() {
                     borderLeft: item.signal === 'BUY' ? '3px solid var(--success)' : item.signal === 'SELL' ? '3px solid var(--danger)' : ''
                   }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <span style={{ fontWeight: 600 }}>{item.symbol}</span>
-                      <span style={{ fontFamily: 'JetBrains Mono', color: item.change >= 0 ? 'var(--success)' : 'var(--danger)' }}>
-                        ₹{item.ltp?.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontWeight: 600 }}>{item.symbol}</span>
+                        {item.status === 'ZERODHA_LIVE' ? (
+                          <span style={{ fontSize: '10px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>LIVE</span>
+                        ) : (
+                          <span style={{ fontSize: '10px', background: 'rgba(234, 179, 8, 0.15)', color: '#eab308', padding: '1px 5px', borderRadius: '4px' }}>AUTH REQ</span>
+                        )}
+                      </div>
+                      <span style={{ fontFamily: 'JetBrains Mono', color: (item.change || 0) >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                        {item.ltp > 0 ? `₹${item.ltp?.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                       </span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
                       <span style={{ color: 'var(--text-secondary)' }}>ML Predict: <span style={{ color: item.ml_predict === 'BULLISH' ? 'var(--success)' : item.ml_predict === 'BEARISH' ? 'var(--danger)' : 'var(--warning)' }}>{item.ml_predict || item.signal}</span></span>
-                      <span style={{ color: 'var(--text-secondary)' }}>Change: {item.change >= 0 ? '+' : ''}{item.change?.toFixed(2)}%</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>Change: {item.ltp > 0 ? `${(item.change || 0) >= 0 ? '+' : ''}${(item.change || 0).toFixed(2)}%` : '—'}</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>RSI: {(item.rsi || 0).toFixed(1)}</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>RSI: {item.rsi ? item.rsi.toFixed(1) : '—'}</span>
                       <span style={{ color: 'var(--text-secondary)' }}>Signal: {item.signal}</span>
                     </div>
                   </div>

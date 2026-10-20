@@ -34,10 +34,45 @@ class InstrumentMaster:
         """
         Resolves an instrument_token for a given symbol and exchange.
         """
+        clean_sym = tradingsymbol.upper().replace(".NS", "").replace("NSE:", "").strip()
         if not self._is_loaded:
-            logger.warning("Instrument master is not loaded. Resolve may fail.")
-            
-        return self._lookup.get(self._key(tradingsymbol, exchange))
+            try:
+                db = SessionLocal()
+                try:
+                    self.load_from_db(db)
+                finally:
+                    db.close()  # always release even if load_from_db raises
+            except Exception:
+                pass
+
+        token = self._lookup.get(self._key(clean_sym, exchange))
+        if token:
+            return token
+
+        # Standard Zerodha NSE Tokens
+        TOP_NSE_TOKENS = {
+            "RELIANCE": 738561,
+            "TCS": 2953217,
+            "INFY": 408065,
+            "HDFCBANK": 341249,
+            "ICICIBANK": 1270529,
+            "TATASTEEL": 895745,
+            "SBIN": 779521,
+            "BHARTIARTL": 2714625,
+            "ITC": 424961,
+            "KOTAKBANK": 492033,
+            "LT": 2939649,
+            "AXISBANK": 1510401,
+            "MARUTI": 2815745,
+            "BAJFINANCE": 81153,
+            "WIPRO": 969473,
+            "HCLTECH": 1850625,
+            "ASIANPAINT": 60417,
+            "SUNPHARMA": 857857,
+            "TITAN": 897281,
+            "ADANIENT": 6401
+        }
+        return TOP_NSE_TOKENS.get(clean_sym)
 
     def fetch_and_store_instruments(self, broker, db: Session):
         """

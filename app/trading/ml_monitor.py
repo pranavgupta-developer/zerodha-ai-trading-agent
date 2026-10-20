@@ -26,6 +26,9 @@ class PredictionRecord:
     exit_reason: Optional[str] = None
     is_correct: Optional[bool] = None
     exit_timestamp: Optional[str] = None
+    expected_return_pct: Optional[float] = None
+    quality_score: Optional[float] = None
+    return_error: Optional[float] = None
 
 class MLMonitor:
     """
@@ -94,7 +97,9 @@ class MLMonitor:
         features: Optional[Dict[str, float]] = None,
         market_regime: Optional[str] = None,
         trade_id: Optional[str] = None,
-        prediction_id: Optional[str] = None
+        prediction_id: Optional[str] = None,
+        expected_return_pct: Optional[float] = None,
+        quality_score: Optional[float] = None
     ) -> PredictionRecord:
         """
         Records a new ML/Agent signal prediction at trade entry.
@@ -117,7 +122,9 @@ class MLMonitor:
             features={k: round(float(v), 4) for k, v in features.items() if isinstance(v, (int, float))},
             market_regime=market_regime,
             status="PENDING",
-            trade_id=trade_id
+            trade_id=trade_id,
+            expected_return_pct=round(float(expected_return_pct), 3) if expected_return_pct is not None else None,
+            quality_score=round(float(quality_score), 1) if quality_score is not None else None
         )
 
         self.records.append(record)
@@ -131,7 +138,8 @@ class MLMonitor:
         exit_price: float,
         realized_pnl: float,
         exit_reason: str,
-        trade_id: Optional[str] = None
+        trade_id: Optional[str] = None,
+        realized_pnl_pct: Optional[float] = None  # Pass from ExitEvent.pnl_pct for correct qty-weighted %
     ) -> Optional[PredictionRecord]:
         """
         Closes the loop when a trade exits, comparing predicted direction against actual outcome.
@@ -164,8 +172,13 @@ class MLMonitor:
         else:
             is_correct = bool(abs(realized_pnl) < 1.0)  # HOLD prediction
 
-        cost_basis = matched.entry_price
-        pnl_pct = (realized_pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
+        # Use caller-supplied pnl_pct (from ExitEvent) if available; it is quantity-weighted.
+        # Fallback: per-share approximation — only valid when realized_pnl is also per-share.
+        if realized_pnl_pct is not None:
+            pnl_pct = realized_pnl_pct
+        else:
+            cost_basis = matched.entry_price
+            pnl_pct = (realized_pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
 
         matched.status = "COMPLETED"
         matched.exit_price = round(float(exit_price), 2)
@@ -174,6 +187,8 @@ class MLMonitor:
         matched.exit_reason = exit_reason
         matched.is_correct = is_correct
         matched.exit_timestamp = datetime.now(timezone.utc).isoformat()
+        if matched.expected_return_pct is not None:
+            matched.return_error = round(abs(matched.expected_return_pct - pnl_pct), 3)
 
         self._save_records()
         logger.info(
@@ -201,6 +216,41 @@ class MLMonitor:
             return 0.0
         sq_errors = [((r.confidence) - (1.0 if r.is_correct else 0.0)) ** 2 for r in completed]
         return round(float(np.mean(sq_errors)), 4)
+
+    def calculate_expected_return_mae(self, window: int = 50) -> float:
+        """
+        Calculates Mean Absolute Error between predicted expected return % and actual realized return %.
+        """
+        completed = [r for r in self.records if r.status == "COMPLETED" and r.return_error is not None]
+        if not completed:
+            return 0.0
+        subset = completed[-window:]
+        return round(float(np.mean([r.return_error for r in subset])), 4)
+
+    def get_regime_performance_summary(self) -> Dict[str, Any]:
+        """
+        Aggregates completed trade performance segmented by market regime.
+        """
+        summary = {
+            "BULLISH_TREND": {"trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0},
+            "BEARISH_TREND": {"trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0},
+            "SIDEWAYS": {"trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0},
+            "HIGH_VOLATILITY": {"trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0}
+        }
+        for r in self.records:
+            if r.status == "COMPLETED" and r.market_regime in summary:
+                reg = summary[r.market_regime]
+                reg["trades"] += 1
+                if r.is_correct:
+                    reg["wins"] += 1
+                if r.realized_pnl:
+                    reg["total_pnl"] = round(reg["total_pnl"] + r.realized_pnl, 2)
+
+        for reg, stats in summary.items():
+            if stats["trades"] > 0:
+                stats["win_rate"] = round(float(stats["wins"] / stats["trades"]) * 100.0, 1)
+
+        return summary
 
     def detect_prediction_drift(self, reference_window: int = 40, current_window: int = 20) -> Dict[str, Any]:
         """

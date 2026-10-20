@@ -111,5 +111,22 @@ class CandleAggregator:
         finally:
             db.close()
 
+    def get_recent_candles(self, instrument_token: int, interval: str = '1m', limit: int = 50) -> List[Any]:
+        """
+        Retrieves recent real aggregated candles from the SQLite database.
+        """
+        db: Session = SessionLocal()
+        try:
+            candles = db.query(Candle).filter(
+                Candle.instrument_token == instrument_token,
+                Candle.interval == interval
+            ).order_by(Candle.timestamp.asc()).all()
+            return candles[-limit:]
+        except Exception as e:
+            logger.error(f"Error fetching recent candles for token {instrument_token}: {e}")
+            return []
+        finally:
+            db.close()
+
 # Global aggregator instance
 aggregator = CandleAggregator()

@@ -127,7 +127,7 @@ def start_ticker():
     if market_ticker:
         try:
             market_ticker.stop()
-        except:
+        except Exception:
             pass
             
     # Register default top tokens for symbol lookup
@@ -180,6 +180,12 @@ def start_ticker():
                 if token and "last_price" in tick:
                     price_cache.update(token, float(tick["last_price"]))
                     updated = True
+            # Stream live ticks into CandleAggregator for real 1m/5m/15m candle building
+            try:
+                from app.broker.candle_aggregator import aggregator
+                aggregator.process_ticks(ticks)
+            except Exception as e:
+                logger.debug(f"Error aggregating live ticks: {e}")
             if updated:
                 notify_state_changed()
                 
@@ -189,131 +195,27 @@ def start_ticker():
     except Exception as e:
         logger.error(f"Failed to start KiteTicker: {e}")
 
-DEFAULT_BASE_PRICES = {
-    "ADANIENT": 2665.10,
-    "ADANIPORTS": 1761.50,
-    "APOLLOHOSP": 7725.00,
-    "ASIANPAINT": 2326.80,
-    "AXISBANK": 1239.00,
-    "BAJAJ-AUTO": 10360.00,
-    "BAJAJFINSV": 1700.80,
-    "BAJFINANCE": 959.85,
-    "BEL": 376.10,
-    "BHARTIARTL": 1873.30,
-    "BSE": 3340.00,
-    "CIPLA": 1325.40,
-    "COALINDIA": 413.50,
-    "DRREDDY": 1241.60,
-    "EICHERMOT": 7370.50,
-    "ETERNAL": 323.00,
-    "GRASIM": 2895.80,
-    "HCLTECH": 1364.20,
-    "HDFCBANK": 711.00,
-    "HDFCLIFE": 545.85,
-    "HINDALCO": 903.35,
-    "HINDUNILVR": 1855.40,
-    "ICICIBANK": 1381.80,
-    "INDIGO": 4692.90,
-    "INFY": 1128.50,
-    "ITC": 261.20,
-    "JIOFIN": 214.37,
-    "JSWSTEEL": 1236.50,
-    "KOTAKBANK": 441.95,
-    "LT": 3654.70,
-    "M&M": 2904.50,
-    "MARUTI": 11537.00,
-    "MAXHEALTH": 831.25,
-    "NESTLEIND": 1245.60,
-    "NTPC": 310.25,
-    "ONGC": 223.70,
-    "POWERGRID": 249.95,
-    "RELIANCE": 1208.30,
-    "SBILIFE": 1643.20,
-    "SBIN": 969.60,
-    "SHRIRAMFIN": 929.45,
-    "SUNPHARMA": 1740.10,
-    "TATACONSUM": 965.95,
-    "TATASTEEL": 174.88,
-    "TCS": 2459.30,
-    "TECHM": 1766.30,
-    "TITAN": 4415.40,
-    "TMPV": 279.80,
-    "TRENT": 2881.00,
-    "ULTRACEMCO": 10756.00
-}
+daily_prev_closes: dict[str, float] = {}
 
-DEFAULT_PREV_CLOSES = {
-    "ADANIENT": 2692.00,
-    "ADANIPORTS": 1750.80,
-    "APOLLOHOSP": 7890.00,
-    "ASIANPAINT": 2331.90,
-    "AXISBANK": 1290.00,
-    "BAJAJ-AUTO": 10405.00,
-    "BAJAJFINSV": 1729.00,
-    "BAJFINANCE": 982.10,
-    "BEL": 376.85,
-    "BHARTIARTL": 1905.00,
-    "BSE": 3363.00,
-    "CIPLA": 1325.10,
-    "COALINDIA": 417.20,
-    "DRREDDY": 1233.00,
-    "EICHERMOT": 7284.50,
-    "ETERNAL": 325.30,
-    "GRASIM": 2920.00,
-    "HCLTECH": 1380.00,
-    "HDFCBANK": 728.85,
-    "HDFCLIFE": 553.00,
-    "HINDALCO": 908.00,
-    "HINDUNILVR": 1893.80,
-    "ICICIBANK": 1397.00,
-    "INDIGO": 4686.90,
-    "INFY": 1161.20,
-    "ITC": 263.50,
-    "JIOFIN": 216.25,
-    "JSWSTEEL": 1216.30,
-    "KOTAKBANK": 447.40,
-    "LT": 3627.10,
-    "M&M": 2920.90,
-    "MARUTI": 11489.00,
-    "MAXHEALTH": 846.00,
-    "NESTLEIND": 1265.50,
-    "NTPC": 315.15,
-    "ONGC": 222.00,
-    "POWERGRID": 250.45,
-    "RELIANCE": 1211.20,
-    "SBILIFE": 1656.80,
-    "SBIN": 962.60,
-    "SHRIRAMFIN": 939.95,
-    "SUNPHARMA": 1758.80,
-    "TATACONSUM": 978.90,
-    "TATASTEEL": 175.50,
-    "TCS": 2465.00,
-    "TECHM": 1790.00,
-    "TITAN": 4444.80,
-    "TMPV": 286.85,
-    "TRENT": 2958.70,
-    "ULTRACEMCO": 10907.00
-}
+# Parse configured trading symbols dynamically from settings
+_configured_symbols = [s.strip().replace(".NS", "") for s in settings.TRADING_SYMBOLS.split(",") if s.strip()]
+if not _configured_symbols:
+    _configured_symbols = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK"]
 
-daily_prev_closes: dict = dict(DEFAULT_PREV_CLOSES)
-
-# Pre-populate price_cache and current_watchlist_payload immediately on startup
-for _sym, _price in DEFAULT_BASE_PRICES.items():
-    price_cache.update_symbol(_sym, _price)
-
-current_watchlist_payload: list = [
+# Pre-populate watchlist strictly awaiting live Zerodha feed (zero fake/simulated prices)
+current_watchlist_payload: list[dict] = [
     {
         "symbol": _sym,
-        "ltp": _price,
-        "prev_close": DEFAULT_PREV_CLOSES.get(_sym, _price),
-        "change": round(((_price - DEFAULT_PREV_CLOSES.get(_sym, _price)) / DEFAULT_PREV_CLOSES.get(_sym, _price)) * 100, 2) if DEFAULT_PREV_CLOSES.get(_sym, _price) else 0.0,
+        "ltp": 0.0,
+        "prev_close": 0.0,
+        "change": 0.0,
         "signal": "HOLD",
-        "status": "HEALTHY",
+        "status": "WAITING_FOR_ZERODHA_FEED",
         "source_ts": time.time(),
-        "rsi": 50.0,
-        "ml_predict": "NEUTRAL"
+        "rsi": 0.0,
+        "ml_predict": "AWAITING_DATA"
     }
-    for _sym, _price in DEFAULT_BASE_PRICES.items()
+    for _sym in _configured_symbols
 ]
 
 def sync_live_market_prices():
@@ -353,7 +255,7 @@ def build_portfolio_payload() -> dict:
             
         avg_price = float(p.get("average_price", 0.0))
         if avg_price <= 0.0:
-            avg_price = DEFAULT_BASE_PRICES.get(clean_sym, 100.0)
+            avg_price = float(p.get("last_price", 0.0))
             
         token = p.get("instrument_token")
         last_price = float(p.get("last_price", 0.0))
@@ -387,10 +289,9 @@ def build_portfolio_payload() -> dict:
         if ltp == 0.0:
             ltp = price_cache.get_by_symbol(sym, 0.0)
         if ltp == 0.0:
-            ltp = item["last_price"]
+            ltp = float(item.get("last_price", 0.0))
         if ltp == 0.0:
-            ltp = DEFAULT_BASE_PRICES.get(sym, avg_price)
-            price_cache.update_symbol(sym, ltp)
+            ltp = avg_price
             
         pnl = (ltp - avg_price) * qty
         cost_basis = avg_price * qty
@@ -426,8 +327,7 @@ def build_portfolio_payload() -> dict:
         if ltp == 0.0:
             ltp = float(h.get("last_price", 0.0))
         if ltp == 0.0:
-            ltp = DEFAULT_BASE_PRICES.get(sym, avg_price)
-            price_cache.update_symbol(sym, ltp)
+            ltp = avg_price
             
         pnl = (ltp - avg_price) * qty
         frontend_holdings.append({
@@ -447,10 +347,20 @@ def build_portfolio_payload() -> dict:
         live_ltp = price_cache.get_by_symbol(sym, 0.0)
         if live_ltp > 0:
             w_item["ltp"] = round(live_ltp, 2)
-            prev_close = daily_prev_closes.get(sym) or w_item.get("prev_close") or DEFAULT_PREV_CLOSES.get(sym, live_ltp)
+            prev_close = daily_prev_closes.get(sym) or w_item.get("prev_close", 0.0)
+            if prev_close == 0.0:
+                prev_close = live_ltp
             w_item["prev_close"] = prev_close
             w_item["change"] = round(((live_ltp - prev_close) / prev_close) * 100, 2) if prev_close else 0.0
+            if broker.is_authenticated():
+                w_item["status"] = "ZERODHA_LIVE"
         updated_watchlist.append(w_item)
+
+    # Pre-compute expensive metrics once per tick — these iterate over potentially
+    # 500+ records and must not be called multiple times inside a 1-second loop.
+    _paper_metrics = paper_journal.calculate_metrics()
+    _ml_summary = ml_monitor.get_metrics_summary()   # already includes rolling_accuracy + drift
+    _chain_valid = audit_chain.verify_chain()
 
     return {
         "type": "market_update",
@@ -473,20 +383,20 @@ def build_portfolio_payload() -> dict:
             "critical_count": reconciliation_engine.latest_report.critical_count if reconciliation_engine.latest_report else 0
         },
         "ml_metrics": {
-            "overall_accuracy": ml_monitor.get_metrics_summary().get("overall_accuracy", 0.0),
-            "rolling_accuracy_20": ml_monitor.calculate_rolling_accuracy(20),
-            "total_predictions": len(ml_monitor.records),
-            "drift_detected": ml_monitor.detect_prediction_drift().get("drift_detected", False)
+            "overall_accuracy": _ml_summary.get("overall_accuracy", 0.0),
+            "rolling_accuracy_20": _ml_summary.get("rolling_accuracy_20", 0.0),
+            "total_predictions": _ml_summary.get("total_predictions", len(ml_monitor.records)),
+            "drift_detected": _ml_summary.get("prediction_drift", {}).get("drift_detected", False)
         },
         "paper_validation": {
-            "verdict": paper_journal.calculate_metrics().get("validation_verdict", "IN_PROGRESS"),
-            "days_completed": paper_journal.calculate_metrics().get("days_completed", 0),
-            "sharpe_ratio": paper_journal.calculate_metrics().get("sharpe_ratio", 0.0),
-            "max_drawdown_pct": paper_journal.calculate_metrics().get("max_drawdown_pct", 0.0),
-            "net_pnl_after_fees": paper_journal.calculate_metrics().get("net_pnl_after_fees", 0.0)
+            "verdict": _paper_metrics.get("validation_verdict", "IN_PROGRESS"),
+            "days_completed": _paper_metrics.get("days_completed", 0),
+            "sharpe_ratio": _paper_metrics.get("sharpe_ratio", 0.0),
+            "max_drawdown_pct": _paper_metrics.get("max_drawdown_pct", 0.0),
+            "net_pnl_after_fees": _paper_metrics.get("net_pnl_after_fees", 0.0)
         },
         "audit_chain": {
-            "is_valid": audit_chain.verify_chain(),
+            "is_valid": _chain_valid,
             "last_hash": (audit_chain.last_hash[:16] + "...") if audit_chain.last_hash else "GENESIS"
         },
         "risk_metrics": {
@@ -504,6 +414,7 @@ def build_portfolio_payload() -> dict:
         "unified_risk": unified_risk_center.evaluate_status(global_positions),
         "backend_ts": time.time()
     }
+
 
 
 
@@ -624,10 +535,12 @@ class YFCandle:
         self.close = c_close
         self.volume = c_volume
 
-async def simulate_trades_stream():
+async def live_market_data_stream():
     import yfinance as yf
     from app.utils.indicators import get_feature_snapshot
     from app.broker.market_status import get_market_status
+    from app.broker.candle_aggregator import aggregator
+    from datetime import datetime, timedelta
     
     # Use the configurable list of symbols from the .env file (or defaults)
     symbols = [s.strip() for s in settings.TRADING_SYMBOLS.split(",") if s.strip()]
@@ -636,36 +549,56 @@ async def simulate_trades_stream():
     # Initialize the real pipeline
     strategy = EmaRsiVwapStrategy()
     agent_service = AgentService()
-    # Using the global risk_engine and order_manager defined below (we can just reference them since they are global)
     
-
     global current_watchlist_payload, EMERGENCY_STOP_ACTIVE
     
-    # Cache for yfinance to avoid rate limits
-    last_yf_fetch = 0
-    yf_cache = {}
+    last_auth_warn = 0.0
+    last_yf_fetch = 0.0
+    yf_cache: dict = {}
+    kite_candles_cache: dict = {}
+    last_kite_hist_fetch: dict = {}
     
     while True:
         try:
-            # Dynamically pull user's portfolio to monitor for automated trading
-            portfolio_symbols = set()
-            for h in global_holdings:
-                sym = h.get("tradingsymbol")
-                if sym:
-                    portfolio_symbols.add(f"{sym}.NS")
-            for p in global_positions:
-                sym = p.get("tradingsymbol")
-                if sym:
-                    portfolio_symbols.add(f"{sym}.NS")
-                    
-            # Combine hardcoded watchlist with live portfolio
-            # active_symbols = list(set(symbols) | portfolio_symbols)
-            active_symbols = list(set(symbols)) # User wants to ONLY trade TATASTEEL
+            active_symbols = list(set(symbols))
             display_symbols = {s: s.replace(".NS", "") for s in active_symbols}
-
-            watchlist_payload = []
             
-            # Fetch bulk quotes ONCE per loop to avoid Kite rate limits
+            # Check Zerodha authentication status
+            is_zerodha_live = broker.is_authenticated()
+            
+            # If Zerodha is NOT authenticated, do NOT simulate fake market data or trades!
+            if not is_zerodha_live:
+                now_ts = time.time()
+                if now_ts - last_auth_warn > 300.0:
+                    logger.info(
+                        "[ZERODHA LIVE FEED] Waiting for Zerodha authentication. "
+                        "Authenticate at /api/v1/auth/login?redirect=true or set KITE_ACCESS_TOKEN."
+                    )
+                    last_auth_warn = now_ts
+                
+                watchlist_payload = [
+                    {
+                        "symbol": display_symbols[s],
+                        "ltp": price_cache.get_by_symbol(display_symbols[s], 0.0),
+                        "prev_close": daily_prev_closes.get(display_symbols[s], 0.0),
+                        "change": 0.0,
+                        "signal": "HOLD",
+                        "status": "ZERODHA_AUTH_REQUIRED",
+                        "source_ts": time.time(),
+                        "rsi": 0.0,
+                        "ml_predict": "AWAITING_AUTH"
+                    }
+                    for s in active_symbols
+                ]
+                current_watchlist_payload = watchlist_payload
+                await asyncio.sleep(2.0)
+                continue
+                
+            # If authenticated and ticker not running, start it
+            if not market_ticker:
+                start_ticker()
+
+            # Fetch bulk quotes directly from Zerodha Kite Connect
             all_kite_symbols = [f"NSE:{display_symbols[s]}" for s in active_symbols]
             bulk_quotes = {}
             try:
@@ -683,81 +616,118 @@ async def simulate_trades_stream():
                                 if token:
                                     price_cache.update(token, float(ltp))
             except Exception as e:
-                logger.warning(f"Bulk quote fetch failed: {e}")
+                logger.warning(f"Zerodha live quote fetch failed: {e}")
 
-            # Fetch real market data in a single batch request
-            current_time = time.time()
-            if current_time - last_yf_fetch > 10 or not yf_cache:
-                try:
-                    batch_df = await asyncio.to_thread(
-                        yf.download,
-                        tickers=active_symbols,
-                        period="1d",
-                        interval="1m",
-                        group_by="ticker",
-                        progress=False
-                    )
-                    for sym in active_symbols:
-                        try:
-                            if len(active_symbols) == 1:
-                                sym_df = batch_df
-                            else:
-                                sym_df = batch_df[sym] if sym in batch_df else None
-                            if sym_df is not None and not sym_df.empty:
-                                yf_cache[sym] = sym_df.dropna(how='all')
-                        except Exception:
-                            pass
-                    last_yf_fetch = current_time
-                except Exception as e:
-                    logger.warning(f"Batch real market data download failed: {e}")
+            watchlist_payload = []
+            now_dt = datetime.now()
+            source_ts = time.time()
             
-            # Map cached results
-            results = [yf_cache.get(sym) for sym in active_symbols]
-            source_ts = last_yf_fetch # Timestamp when real data was received
-            
-            for sym, result in zip(active_symbols, results):
-
+            for sym in active_symbols:
                 try:
-                    if isinstance(result, BaseException) or result is None:
-                        continue
-                    
-                    df = result
-                    if df.empty:
-                        continue
-                
-                    # Create candle objects
-                    candles = []
-                    # Ensure we handle pandas 2.0+ correctly where columns might be multiindex
-                    for _, row in df.iterrows():
-                        o = float(row['Open'].iloc[0]) if isinstance(row['Open'], (list, tuple, type(df))) or hasattr(row['Open'], 'iloc') else float(row['Open'])
-                        h = float(row['High'].iloc[0]) if isinstance(row['High'], (list, tuple, type(df))) or hasattr(row['High'], 'iloc') else float(row['High'])
-                        l = float(row['Low'].iloc[0]) if isinstance(row['Low'], (list, tuple, type(df))) or hasattr(row['Low'], 'iloc') else float(row['Low'])
-                        c = float(row['Close'].iloc[0]) if isinstance(row['Close'], (list, tuple, type(df))) or hasattr(row['Close'], 'iloc') else float(row['Close'])
-                        v = float(row['Volume'].iloc[0]) if isinstance(row['Volume'], (list, tuple, type(df))) or hasattr(row['Volume'], 'iloc') else float(row['Volume'])
-                        candles.append(YFCandle(o, h, l, c, v))
-                    
-                    if not candles:
-                        continue
-                
-                    current_price = candles[-1].close
                     clean_sym = display_symbols[sym]
                     kite_symbol = f"NSE:{clean_sym}"
                     quote_data = bulk_quotes.get(kite_symbol) if bulk_quotes else None
                     
-                    # Use real-time broker data for the UI if available
-                    if quote_data:
-                        current_price = quote_data.get("last_price", current_price)
-                        kite_prev_close = quote_data.get("ohlc", {}).get("close")
-                        if kite_prev_close and kite_prev_close > 0:
-                            daily_prev_closes[clean_sym] = kite_prev_close
-
-                    prev_close = daily_prev_closes.get(clean_sym) or DEFAULT_PREV_CLOSES.get(clean_sym, current_price)
+                    # Resolve instrument token
+                    token = quote_data.get("instrument_token") if quote_data else instrument_master.resolve_token(clean_sym)
                     
-                    # Register live price into cache
-                    price_cache.update_symbol(clean_sym, current_price)
+                    # Determine current real price strictly from Zerodha
+                    current_price = 0.0
+                    if quote_data and "last_price" in quote_data:
+                        current_price = float(quote_data["last_price"])
+                    elif token:
+                        current_price = price_cache.get(token, 0.0)
+                    if current_price <= 0.0:
+                        current_price = price_cache.get_by_symbol(clean_sym, 0.0)
 
+                    # Real previous close from Zerodha OHLC
+                    if quote_data and "ohlc" in quote_data and quote_data["ohlc"].get("close"):
+                        daily_prev_closes[clean_sym] = float(quote_data["ohlc"]["close"])
+                    prev_close = daily_prev_closes.get(clean_sym, current_price)
+                    
+                    if current_price > 0.0:
+                        price_cache.update_symbol(clean_sym, current_price)
+                        if token:
+                            price_cache.update(token, current_price)
+                            
+                    # 1. First preference for candle data: Real Zerodha WebSocket minute aggregator
+                    candles = []
+                    if token:
+                        agg_candles = aggregator.get_recent_candles(token)
+                        if agg_candles and len(agg_candles) >= 15:
+                            candles = [YFCandle(c["open"], c["high"], c["low"], c["close"], c["volume"]) for c in agg_candles]
+                    
+                    # 2. Second preference: Fetch historical minute candles directly from Zerodha Kite Connect API
+                    if not candles and token:
+                        last_fetch = last_kite_hist_fetch.get(clean_sym, 0.0)
+                        if source_ts - last_fetch > 60.0:
+                            try:
+                                from_dt = now_dt - timedelta(days=2)
+                                hist = await asyncio.to_thread(
+                                    broker.get_historical_data,
+                                    instrument_token=token,
+                                    from_date=from_dt,
+                                    to_date=now_dt,
+                                    interval="minute"
+                                )
+                                if hist:
+                                    candles = [YFCandle(c["open"], c["high"], c["low"], c["close"], c["volume"]) for c in hist]
+                                    kite_candles_cache[clean_sym] = candles
+                                    last_kite_hist_fetch[clean_sym] = source_ts
+                            except Exception as h_err:
+                                logger.debug(f"Zerodha historical data fetch for {clean_sym}: {h_err}")
+                                last_kite_hist_fetch[clean_sym] = source_ts
+                        if not candles and clean_sym in kite_candles_cache:
+                            candles = list(kite_candles_cache[clean_sym])
+                            
+                    # 3. Third preference fallback for initial candle shape:
+                    if not candles:
+                        if source_ts - last_yf_fetch > 15.0 or not yf_cache:
+                            try:
+                                batch_df = await asyncio.to_thread(
+                                    yf.download,
+                                    tickers=active_symbols,
+                                    period="1d",
+                                    interval="1m",
+                                    group_by="ticker",
+                                    progress=False
+                                )
+                                for s_sub in active_symbols:
+                                    try:
+                                        s_df = batch_df if len(active_symbols) == 1 else (batch_df[s_sub] if s_sub in batch_df else None)
+                                        if s_df is not None and not s_df.empty:
+                                            yf_cache[s_sub] = s_df.dropna(how='all')
+                                    except Exception:
+                                        pass
+                                last_yf_fetch = source_ts
+                            except Exception as yf_err:
+                                logger.warning(f"Secondary candle download failed: {yf_err}")
+                        
+                        df = yf_cache.get(sym)
+                        if df is not None and not df.empty:
+                            for _, row in df.iterrows():
+                                o = float(row['Open'].iloc[0]) if hasattr(row['Open'], 'iloc') else float(row['Open'])
+                                h = float(row['High'].iloc[0]) if hasattr(row['High'], 'iloc') else float(row['High'])
+                                l = float(row['Low'].iloc[0]) if hasattr(row['Low'], 'iloc') else float(row['Low'])
+                                c = float(row['Close'].iloc[0]) if hasattr(row['Close'], 'iloc') else float(row['Close'])
+                                v = float(row['Volume'].iloc[0]) if hasattr(row['Volume'], 'iloc') else float(row['Volume'])
+                                candles.append(YFCandle(o, h, l, c, v))
+                    
+                    # Strictly pin the latest candle close to genuine Zerodha live price
+                    if candles and current_price > 0.0:
+                        candles[-1].close = current_price
+                        if current_price > candles[-1].high:
+                            candles[-1].high = current_price
+                        if current_price < candles[-1].low:
+                            candles[-1].low = current_price
+                    elif candles:
+                        current_price = candles[-1].close
+                        
+                    if current_price <= 0.0 or not candles:
+                        continue
+                        
                     # Automated Position Exit check (Stop-Loss / Take-Profit / Trailing SL)
-                    exit_event = position_manager.check_and_execute_exit(display_symbols[sym], current_price)
+                    exit_event = position_manager.check_and_execute_exit(clean_sym, current_price)
                     if exit_event:
                         out_rec = ml_monitor.record_outcome(
                             symbol=exit_event.symbol,
@@ -781,29 +751,22 @@ async def simulate_trades_stream():
                             f"Triggered @ ₹{exit_event.exit_price:.2f} | P&L: ₹{exit_event.pnl:.2f} ({exit_event.pnl_pct:.2f}%) | Order: {exit_event.broker_order_id}"
                         )
                         notify_state_changed()
-                        
+
                     change = round(((current_price - prev_close) / prev_close) * 100, 2) if prev_close and prev_close > 0 else 0.0
-                
-                    clean_sym = display_symbols[sym]
                     existing_pos = position_manager.get_tracked_position(clean_sym)
                     active_pos_map = {p.symbol: p.quantity * p.entry_price for p in position_manager.get_all_tracked().values()}
                     effective_margin = global_available_margin if global_available_margin > 0 else 500000.0
                     account_state = AccountState(available_margin=effective_margin, unrealized_pnl=0.0, realized_pnl=0.0, open_positions=active_pos_map)
-                
+
                     snapshot = get_feature_snapshot(candles)
-                
-                    # Extract the actual timestamp of the latest market data tick/candle
+                    
                     latest_candle_time = None
-                    try:
-                        if quote_data and "timestamp" in quote_data:
-                            latest_candle_time = quote_data["timestamp"]
-                        else:
-                            latest_candle_time = df.index[-1].to_pydatetime()
-                    except Exception:
-                        pass
-                        
+                    if quote_data and "timestamp" in quote_data:
+                        latest_candle_time = quote_data["timestamp"]
                     mkt_status = get_market_status(latest_tick_time=latest_candle_time)
-                
+                    if quote_data:
+                        mkt_status = "ZERODHA_LIVE"
+
                     if EMERGENCY_STOP_ACTIVE:
                         candidate_trade = None
                         order = None
@@ -831,19 +794,17 @@ async def simulate_trades_stream():
                             EMERGENCY_STOP_ACTIVE = True
                             log_audit_event("ANOMALY_HALT", f"anom_{clean_sym}", clean_sym, "HALT", msg)
                             notify_state_changed()
-                
+                    
                     signal_str = candidate_trade.direction.name if candidate_trade else "HOLD"
                     if candidate_trade and candidate_trade.direction == SignalDirection.HOLD:
                         signal_str = "HOLD"
-                    
-                    # Generate mock ML prediction based on RSI and Signal for UI display
+                        
                     ml_predict = "NEUTRAL"
                     if signal_str == "BUY":
                         ml_predict = "BULLISH"
                     elif signal_str == "SELL":
                         ml_predict = "BEARISH"
 
-                    # Append to watchlist payload
                     watchlist_payload.append({
                         "symbol": clean_sym,
                         "ltp": current_price,
@@ -868,8 +829,10 @@ async def simulate_trades_stream():
                                 confidence=candidate_trade.confidence_score,
                                 entry_price=candidate_trade.entry_price,
                                 features=snapshot or {},
-                                market_regime=MLMonitor.classify_regime(snapshot or {}, candidate_trade.entry_price),
-                                trade_id=trade_id
+                                market_regime=candidate_trade.market_regime or MLMonitor.classify_regime(snapshot or {}, candidate_trade.entry_price),
+                                trade_id=trade_id,
+                                expected_return_pct=candidate_trade.expected_return_pct,
+                                quality_score=candidate_trade.quality_score
                             )
                             position_manager.register_position(
                                 symbol=candidate_trade.symbol,
@@ -956,8 +919,9 @@ async def simulate_trades_stream():
             await broadcast_portfolio_update()
         except Exception as e:
             logger.error(f"Error in live market simulation: {e}")
-            
-        await asyncio.sleep(1.0) # Non-blocking poll every 0.1 seconds
+        await asyncio.sleep(1.0) # Non-blocking poll every 1 second
+
+simulate_trades_stream = live_market_data_stream
 
 async def periodic_reconciliation_loop():
     while True:
@@ -1005,7 +969,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Lifespan initialization error: {e}")
     
-    task = asyncio.create_task(simulate_trades_stream())
+    task = asyncio.create_task(live_market_data_stream())
     broadcast_task = asyncio.create_task(portfolio_broadcast_loop())
     reconcile_task = asyncio.create_task(periodic_reconciliation_loop())
     yield
@@ -1064,11 +1028,53 @@ def get_dashboard():
     return FileResponse("app/static/index.html")
 
 @app.get("/api/v1/auth/login")
-def login():
+def login(redirect: bool = False):
     """
-    Returns the Kite Connect login URL to which the user should be redirected.
+    Returns the Kite Connect login URL or redirects directly to Zerodha login.
     """
-    return {"login_url": broker.get_login_url()}
+    url = broker.get_login_url()
+    if redirect:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=url)
+    return {"login_url": url}
+
+class TokenSubmissionPayload(BaseModel):
+    token: Optional[str] = None
+    access_token: Optional[str] = None
+    request_token: Optional[str] = None
+
+@app.post("/api/v1/auth/token")
+def set_auth_token(payload: TokenSubmissionPayload):
+    """
+    Directly set Zerodha access token or exchange a fresh request token.
+    Auto-detects whether the token is an access_token or request_token.
+    """
+    t = payload.access_token or payload.token
+    if t:
+        broker.set_access_token(t)
+        is_valid = broker.is_authenticated(force_check=True)
+        if not is_valid:
+            try:
+                session_data = broker.generate_session(t)
+                start_ticker()
+                return {"status": "success", "access_token": session_data.get("access_token"), "authenticated": True}
+            except Exception:
+                pass
+        try:
+            with open(".kite_session", "w") as f:
+                f.write(t)
+        except Exception:
+            pass
+        start_ticker()
+        return {"status": "success", "message": "Zerodha token registered", "authenticated": is_valid}
+    elif payload.request_token:
+        try:
+            session_data = broker.generate_session(payload.request_token)
+            start_ticker()
+            return {"status": "success", "access_token": session_data.get("access_token"), "authenticated": True}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    raise HTTPException(status_code=400, detail="Must provide token, access_token or request_token")
 
 @app.get("/api/v1/auth/callback")
 def auth_callback(request_token: str, action: Optional[str] = None, type: Optional[str] = None, status: Optional[str] = None):
@@ -1386,10 +1392,14 @@ def toggle_emergency_stop():
 
 @app.get("/api/v1/system/status")
 def get_system_status():
+    is_auth = broker.is_authenticated()
     return {
         "emergency_stop_active": EMERGENCY_STOP_ACTIVE,
         "trading_mode": settings.TRADING_MODE,
-        "autonomous_execution": settings.AUTONOMOUS_EXECUTION
+        "autonomous_execution": settings.AUTONOMOUS_EXECUTION,
+        "zerodha_authenticated": is_auth,
+        "data_source": "ZERODHA_KITE_LIVE" if is_auth else "ZERODHA_AUTH_REQUIRED",
+        "login_url": broker.get_login_url()
     }
 
 @app.post("/api/v1/system/reconcile")

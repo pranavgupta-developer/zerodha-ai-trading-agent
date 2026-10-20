@@ -89,33 +89,35 @@ class PositionManager:
             from app.db.models import AuditLog
 
             db = SessionLocal()
-            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-            logs = db.query(AuditLog).filter(
-                AuditLog.event_type == "POSITION_EXIT",
-                AuditLog.timestamp >= today_start
-            ).all()
+            try:
+                today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                logs = db.query(AuditLog).filter(
+                    AuditLog.event_type == "POSITION_EXIT",
+                    AuditLog.timestamp >= today_start
+                ).all()
 
-            pnl_pattern = re.compile(r"P&L:\s*₹?(-?[\d\.]+)")
-            recovered_count = 0
-            for log in logs:
-                match = pnl_pattern.search(log.details or "")
-                if match:
-                    try:
-                        pnl_val = float(match.group(1))
-                        self.closed_positions.append(ExitEvent(
-                            symbol=log.symbol,
-                            reason=ExitReason.MANUAL_SQUARE_OFF,
-                            exit_price=0.0,
-                            quantity=1,
-                            pnl=pnl_val,
-                            pnl_pct=0.0,
-                            timestamp=log.timestamp.timestamp()
-                        ))
-                        recovered_count += 1
-                    except Exception:
-                        pass
-            db.close()
-            logger.info(f"PositionManager recovered {recovered_count} closed positions (Realized P&L: ₹{self.get_realized_pnl():.2f}).")
+                pnl_pattern = re.compile(r"P&L:\s*₹?(-?[\d\.]+)")
+                recovered_count = 0
+                for log in logs:
+                    match = pnl_pattern.search(log.details or "")
+                    if match:
+                        try:
+                            pnl_val = float(match.group(1))
+                            self.closed_positions.append(ExitEvent(
+                                symbol=log.symbol,
+                                reason=ExitReason.MANUAL_SQUARE_OFF,
+                                exit_price=0.0,
+                                quantity=1,
+                                pnl=pnl_val,
+                                pnl_pct=0.0,
+                                timestamp=log.timestamp.timestamp()
+                            ))
+                            recovered_count += 1
+                        except Exception:
+                            pass
+                logger.info(f"PositionManager recovered {recovered_count} closed positions (Realized P&L: ₹{self.get_realized_pnl():.2f}).")
+            finally:
+                db.close()  # Always release the connection, even if an exception occurs above
         except Exception as e:
             logger.debug(f"PositionManager state recovery skipped: {e}")
 
@@ -129,7 +131,7 @@ class PositionManager:
         take_target: float,
         trailing_sl_pct: Optional[float] = None,
         broker_order_id: Optional[str] = None,
-    ) -> TrackedPosition:
+    ) -> Optional[TrackedPosition]:
         """
         Registers or updates a tracked position with SL/TP bounds.
         """
