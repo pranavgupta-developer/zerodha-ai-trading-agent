@@ -19,7 +19,7 @@ NSE_HOLIDAYS = [
 def is_market_open(dt: Optional[datetime.datetime] = None) -> bool:
     """
     Checks if the market is open at the given datetime (defaults to now).
-    Market hours: 09:15 to 15:30 IST on weekdays (Mon-Fri).
+    Market hours: configurable via settings (defaults to 09:30 or 09:15 to 15:30 IST on weekdays).
     """
     if dt is None:
         dt = datetime.datetime.now(tz=IST)
@@ -38,9 +38,17 @@ def is_market_open(dt: Optional[datetime.datetime] = None) -> bool:
     if dt.date() in NSE_HOLIDAYS:
         return False
 
-    # Check time (09:15 to 15:30)
-    market_open_time = datetime.time(9, 15)
-    market_close_time = datetime.time(15, 30)
+    try:
+        from app.core.config import settings
+        open_h = getattr(settings, "MARKET_OPEN_HOUR", 9)
+        open_m = getattr(settings, "MARKET_OPEN_MINUTE", 15)
+        close_h = getattr(settings, "MARKET_CLOSE_HOUR", 15)
+        close_m = getattr(settings, "MARKET_CLOSE_MINUTE", 30)
+    except Exception:
+        open_h, open_m, close_h, close_m = 9, 15, 15, 30
+
+    market_open_time = datetime.time(open_h, open_m)
+    market_close_time = datetime.time(close_h, close_m)
     
     current_time = dt.time()
     
@@ -61,14 +69,23 @@ def get_next_market_open(dt: Optional[datetime.datetime] = None) -> datetime.dat
     else:
         dt = dt.astimezone(IST)
 
-    # If it's before 9:15 AM today, and today is a trading day, next open is today at 9:15
-    if dt.time() < datetime.time(9, 15):
+    try:
+        from app.core.config import settings
+        open_h = getattr(settings, "MARKET_OPEN_HOUR", 9)
+        open_m = getattr(settings, "MARKET_OPEN_MINUTE", 15)
+    except Exception:
+        open_h, open_m = 9, 15
+
+    open_time = datetime.time(open_h, open_m)
+
+    # If it's before market open today, and today is a trading day, next open is today at open_time
+    if dt.time() < open_time:
         if dt.weekday() < 5 and dt.date() not in NSE_HOLIDAYS:
-            return dt.replace(hour=9, minute=15, second=0, microsecond=0)
+            return dt.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
             
     # Otherwise, check subsequent days
     next_day = dt.date() + datetime.timedelta(days=1)
     while next_day.weekday() >= 5 or next_day in NSE_HOLIDAYS:
         next_day += datetime.timedelta(days=1)
         
-    return datetime.datetime.combine(next_day, datetime.time(9, 15)).replace(tzinfo=IST)
+    return datetime.datetime.combine(next_day, open_time).replace(tzinfo=IST)

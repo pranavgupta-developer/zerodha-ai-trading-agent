@@ -97,22 +97,38 @@ class SignalQualityScorer:
                 else:
                     volume_score = 4.0
 
-        # 4. ML Conviction & Expected Return (0-25 pts)
+        # 4. ML Conviction, Alignment & Expected Return (0-25 pts)
         conf = ml_confidence if ml_confidence is not None else signal.confidence
         exp_ret = expected_return_pct if expected_return_pct is not None else signal.expected_return_pct
         
-        # Confidence contributes up to 15 pts
-        ml_score = min(15.0, conf * 15.0)
-        # Expected return contributes up to 10 pts
+        # Base confidence contributes up to 12 pts
+        ml_base = min(12.0, conf * 12.0)
+        
+        # Expected return contributes up to 8 pts
+        ret_pts = 0.0
         if exp_ret >= 1.5:
-            ml_score += 10.0
+            ret_pts = 8.0
         elif exp_ret >= 1.0:
-            ml_score += 7.0
+            ret_pts = 6.0
         elif exp_ret >= 0.5:
-            ml_score += 4.0
+            ret_pts = 4.0
         elif exp_ret > 0.0:
-            ml_score += 2.0
-        ml_score = min(25.0, ml_score)
+            ret_pts = 2.0
+
+        # Directional alignment bonus / penalty (up to +/- 5 pts)
+        alignment_pts = 2.5  # Neutral default when no explicit ML prediction tag
+        if indicators and isinstance(indicators, dict):
+            ml_pred = indicators.get("ml_prediction")
+            if ml_pred:
+                pred_str = str(ml_pred).upper()
+                if (signal.direction == SignalDirection.BUY and pred_str in ("UP", "BUY")) or \
+                   (signal.direction == SignalDirection.SELL and pred_str in ("DOWN", "SELL")):
+                    alignment_pts = 5.0
+                elif (signal.direction == SignalDirection.BUY and pred_str in ("DOWN", "SELL")) or \
+                     (signal.direction == SignalDirection.SELL and pred_str in ("UP", "BUY")):
+                    alignment_pts = -5.0
+
+        ml_score = max(0.0, min(25.0, ml_base + ret_pts + alignment_pts))
 
         # 5. Market Regime Suitability (0-15 pts)
         regime = signal.market_regime

@@ -96,6 +96,57 @@ class ModelRegistry:
 
         if not self.models:
             self._initialize_default_models()
+        else:
+            self._ensure_baseline_models()
+
+    def _ensure_baseline_models(self):
+        """Ensures that Champion, Challenger, and Fallback baseline models always exist and remain healthy."""
+        if not self.get_champion():
+            champ = self.models.get("champ_gemini_quant_v1")
+            if champ:
+                champ.role = ModelRole.CHAMPION
+                champ.status = ModelStatus.ACTIVE
+                champ.is_active = True
+            else:
+                self.register_model(ModelProfile(
+                    model_id="champ_gemini_quant_v1",
+                    name="Gemini-Quant-Ensemble",
+                    version="v1.0",
+                    role=ModelRole.CHAMPION,
+                    status=ModelStatus.ACTIVE,
+                    description="Primary production model combining Gemini AI reasoning with quant momentum factors."
+                ))
+        if not self.get_challenger():
+            chall = self.models.get("challenger_xgb_v1_1")
+            if chall:
+                chall.role = ModelRole.CHALLENGER
+                chall.status = ModelStatus.SHADOW
+                chall.is_active = True
+            else:
+                self.register_model(ModelProfile(
+                    model_id="challenger_xgb_v1_1",
+                    name="XGBoost-Trend-Shadow",
+                    version="v1.1",
+                    role=ModelRole.CHALLENGER,
+                    status=ModelStatus.SHADOW,
+                    description="Shadow candidate model leveraging gradient-boosted technical feature trees."
+                ))
+        if not self.get_fallback():
+            fb = self.models.get("fallback_rules_v0_9")
+            if fb:
+                fb.role = ModelRole.FALLBACK
+                fb.status = ModelStatus.STANDBY
+                fb.is_active = True
+            else:
+                self.register_model(ModelProfile(
+                    model_id="fallback_rules_v0_9",
+                    name="Deterministic-Rule-Fallback",
+                    version="v0.9",
+                    role=ModelRole.FALLBACK,
+                    status=ModelStatus.STANDBY,
+                    description="Hardened deterministic EMA+RSI+VWAP technical rule system."
+                ))
+        self._save_state()
 
     def _initialize_default_models(self):
         """Initializes standard baseline models if registry is empty."""
@@ -244,14 +295,19 @@ class ModelRegistry:
         symbol: str,
         exit_price: float,
         realized_pnl: float,
-        is_champion_correct: bool,
-        champion_confidence: float = 0.85
+        is_champion_correct: bool = True,
+        champion_confidence: float = 0.85,
+        **kwargs
     ) -> Dict[str, Any]:
         """
         Registers actual trade execution outcome, updating performance for Champion
         and resolving corresponding shadow predictions for Challenger.
         Checks auto-rollback and auto-promotion triggers.
         """
+        if "is_correct" in kwargs:
+            is_champion_correct = kwargs["is_correct"]
+        if "confidence" in kwargs:
+            champion_confidence = kwargs["confidence"]
         clean_symbol = symbol.replace(".NS", "").strip()
         champion = self.get_champion()
         challenger = self.get_challenger()
@@ -391,6 +447,10 @@ class ModelRegistry:
         """
         old_champion = self.get_champion()
         challenger = self.get_challenger()
+
+        if not challenger:
+            self._ensure_baseline_models()
+            challenger = self.get_challenger()
 
         if not challenger:
             return {"status": "error", "message": "No active challenger found to promote"}

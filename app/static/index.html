@@ -1,432 +1,701 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zerodha AI Agent | Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css">
+    <title>Zerodha Kite Quant // Execution Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css?v=20">
 </head>
+
 <body>
     <div class="app-container">
-        <!-- Top Navigation / Status Bar -->
+        <!-- ==========================================================================
+             TOP COMMAND BAR & TELEMETRY STRIP
+             ========================================================================== -->
         <header class="topbar">
-            <div class="logo">
-                <span class="logo-text">Zerodha AI Agent</span>
-                <span class="badge mode-dry">DRY RUN</span>
-            </div>
-            
-            <div style="display: flex; align-items: center; gap: 16px;">
-                <button class="btn" id="btn-paper-report" onclick="showPaperReportModal()" style="font-weight: 600; padding: 8px 14px; background: #059669; color: #ffffff; border: none; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;">📊 Paper Report</button>
-                <button class="btn" id="btn-reconcile" onclick="triggerManualReconciliation()" style="font-weight: 600; padding: 8px 14px; background: #2563eb; color: #ffffff; border: none; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;">🔄 Reconcile Now</button>
-                <button class="btn btn-reject" id="btn-emergency-stop" onclick="toggleEmergencyStop()" style="font-weight: bold; padding: 8px 16px;">🚨 EMERGENCY STOP</button>
-                <div class="status-indicators">
-                    <div class="status-item">
-                        <span class="status-dot online" id="broker-status-dot"></span>
-                        <span class="status-text" id="broker-status-text">Kite API Connected</span>
+            <!-- Brand & Trading Mode -->
+            <div class="brand-cluster">
+                <div class="brand-icon">⚡</div>
+                <div class="brand-details">
+                    <div class="brand-title">
+                        ZERODHA KITE QUANT
+                        <span class="badge mode-dry" id="trading-mode-badge">DRY RUN</span>
                     </div>
-                    <div class="status-item">
-                        <span class="status-dot online" id="market-status-dot"></span>
-                        <span class="status-text" id="market-status-text">Market Open</span>
-                    </div>
-                    <div class="status-item">
-                        <span class="status-dot pulse" id="agent-status-dot"></span>
-                        <span class="status-text" id="agent-status-text">Agent Active</span>
-                    </div>
+                    <div class="brand-subtitle">Autonomous HFT & Quantitative Execution Desk</div>
                 </div>
+            </div>
+
+            <!-- Real-Time Telemetry Center -->
+            <div class="telemetry-strip">
+                <div class="status-item" title="Zerodha Kite Connect v3 Broker Gateway Status">
+                    <span class="status-dot online" id="broker-status-dot"></span>
+                    <span class="status-text" id="broker-status-text">Kite API Connected</span>
+                </div>
+                <div class="status-item" title="NSE / BSE Exchange Operational Window">
+                    <span class="status-dot online" id="market-status-dot"></span>
+                    <span class="status-text" id="market-status-text">Market Open</span>
+                </div>
+                <div class="status-item" title="Background Autonomous Execution Loop">
+                    <span class="status-dot pulse" id="agent-status-dot"></span>
+                    <span class="status-text" id="agent-status-text">Agent Active (100% Auto)</span>
+                </div>
+                <div class="status-item" title="WebSocket Ping Latency">
+                    <span class="latency-pill" id="live-latency-pill">&lt; 15ms WS</span>
+                </div>
+            </div>
+
+            <!-- Operator Tactical Quick Actions -->
+            <div class="topbar-actions">
+                <button class="btn btn-paper-report" id="btn-paper-report" onclick="showPaperReportModal()" title="View 7-Day Forward Validation Report">
+                    📊 Paper Report
+                </button>
+                <button class="btn btn-reconcile" id="btn-reconcile" onclick="triggerManualReconciliation()" title="Reconcile Internal Ledger with Broker Holdings">
+                    🔄 Sync Broker
+                </button>
+                <button class="btn btn-emergency" id="btn-emergency-stop" onclick="toggleEmergencyStop()" title="Instant Kill-Switch: Halt all new candidate orders">
+                    🚨 EMERGENCY STOP
+                </button>
             </div>
         </header>
 
-        <!-- Paper Validation Report Modal -->
-        <div id="paper-report-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center;">
-            <div style="background: #1e222d; color: #f3f4f6; width: 90%; max-width: 800px; max-height: 85vh; border-radius: 8px; padding: 24px; display: flex; flex-direction: column; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
-                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #374151; padding-bottom: 12px; margin-bottom: 16px;">
-                    <h2 style="margin: 0; font-size: 1.25rem;">📊 3–7 Day Paper-Trading Validation Report</h2>
-                    <button onclick="closePaperReportModal()" style="background: transparent; border: none; color: #9ca3af; font-size: 1.5rem; cursor: pointer;">&times;</button>
+        <!-- ==========================================================================
+             STATE RECONCILIATION MISMATCH ALERT BANNER
+             ========================================================================== -->
+        <div id="reconciliation-alert-banner">
+            <div>
+                ⚠️ <strong>STATE MISMATCH DETECTED:</strong> Internal ledger differs from Zerodha broker state.
+                <span id="reconcile-discrepancy-msg" style="margin-left: 8px; opacity: 0.9;"></span>
+            </div>
+            <button onclick="triggerManualReconciliation()" class="btn" style="background: #ffffff; color: #b91c1c; font-weight: 700; padding: 4px 12px;">
+                Reconcile Now
+            </button>
+        </div>
+
+        <!-- ==========================================================================
+             EXECUTIVE QUANTITATIVE KPI HUD (6 HIGH-DENSITY CARDS)
+             ========================================================================== -->
+        <section class="pnl-summary">
+            <!-- Card 1: Available Equity Margin -->
+            <div class="summary-card highlight-blue">
+                <div class="card-label">
+                    <span>Available Margin</span>
+                    <span class="card-icon">🏦</span>
                 </div>
-                <div id="paper-report-content" style="overflow-y: auto; flex: 1; font-family: monospace; white-space: pre-wrap; font-size: 0.85rem; background: #111827; padding: 16px; border-radius: 6px; line-height: 1.5;">Loading report...</div>
-                <div style="margin-top: 16px; text-align: right;">
-                    <button onclick="closePaperReportModal()" style="padding: 8px 16px; background: #374151; color: white; border: none; border-radius: 4px; cursor: pointer;">Close</button>
+                <div class="value" id="margin-val">₹--</div>
+                <div class="card-subtext">Zerodha Equity Buying Power</div>
+            </div>
+
+            <!-- Card 2: Overall Day Profit (Net) -->
+            <div class="summary-card highlight-profit">
+                <div class="card-label">
+                    <span>Overall Day Profit</span>
+                    <span class="card-icon">📈</span>
                 </div>
+                <div class="value positive" id="total-day-pnl-val">₹0.00</div>
+                <div class="card-subtext">Net of STT, GST &amp; Brokerage</div>
             </div>
-        </div>
 
-        <!-- Unified Risk & Security Control Center Banner -->
-        <div id="unified-risk-banner" style="background: rgba(16, 185, 129, 0.12); border: 1px solid #10b981; color: #10b981; padding: 12px 20px; font-weight: 600; border-radius: 8px; margin: 12px 0; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
-            <div style="display: flex; align-items: center; gap: 14px;">
-                <span id="risk-center-status-badge" style="background: #10b981; color: #111827; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px;">🟢 SYSTEM SAFE</span>
-                <span id="risk-center-summary-text" style="font-size: 0.88rem; color: #e5e7eb;">All institutional security, reconciliation, and risk boundaries cryptographically verified.</span>
+            <!-- Card 3: Unrealized P&L -->
+            <div class="summary-card">
+                <div class="card-label">
+                    <span>Unrealized P&amp;L</span>
+                    <span class="card-icon">⚡</span>
+                </div>
+                <div class="value" id="unrealized-pnl-val">₹--</div>
+                <div class="card-subtext">Active Mark-to-Market</div>
             </div>
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <button onclick="triggerEmergencyHaltRiskCenter()" style="padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 4px; font-weight: 600; font-size: 0.8rem; cursor: pointer;">🚨 Emergency Halt</button>
-                <button id="btn-resume-system" onclick="resumeRiskCenter()" style="display: none; padding: 6px 12px; background: #059669; color: white; border: none; border-radius: 4px; font-weight: 600; font-size: 0.8rem; cursor: pointer;">✅ Resume System</button>
+
+            <!-- Card 4: Realized P&L -->
+            <div class="summary-card">
+                <div class="card-label">
+                    <span>Realized P&amp;L</span>
+                    <span class="card-icon">💼</span>
+                </div>
+                <div class="value positive" id="realized-pnl-val">₹--</div>
+                <div class="card-subtext">Closed Intraday Trades</div>
             </div>
-        </div>
 
-        <!-- State Mismatch Alert Banner -->
-        <div id="reconciliation-alert-banner" style="display: none; background: #dc2626; color: white; padding: 10px 20px; font-weight: 600; text-align: center; border-radius: 6px; margin: 10px 0;">
-            ⚠️ STATE MISMATCH DETECTED: Local positions differ from Zerodha broker state. <span id="reconcile-discrepancy-msg"></span>
-            <button onclick="triggerManualReconciliation()" style="margin-left: 15px; padding: 4px 10px; background: white; color: #dc2626; border: none; border-radius: 4px; font-weight: bold; cursor: pointer;">Sync Now</button>
-        </div>
+            <!-- Card 5: ML Alpha Model Accuracy -->
+            <div class="summary-card highlight-purple">
+                <div class="card-label">
+                    <span>ML Rolling Acc (N=20)</span>
+                    <span class="card-icon">🧠</span>
+                </div>
+                <div class="value" id="ml-accuracy-val">--%</div>
+                <div id="ml-drift-badge" class="card-subtext positive">Drift: STABLE</div>
+            </div>
 
-        <!-- Main Content Grid -->
-        <main class="dashboard-grid">
-            
-            <!-- Left Column: Watchlist -->
+            <!-- Card 6: Paper Trading Forward Validation -->
+            <div class="summary-card">
+                <div class="card-label">
+                    <span>Paper Validation</span>
+                    <span class="card-icon">🎯</span>
+                </div>
+                <div class="value positive" id="paper-verdict-val" style="font-size: 1.25rem;">IN PROGRESS</div>
+                <div id="paper-sharpe-val" class="card-subtext">Sharpe: -- | Day 0</div>
+            </div>
+        </section>
+
+        <!-- ==========================================================================
+             WORKSPACE NAVIGATION TABS
+             ========================================================================== -->
+        <nav class="workspace-tabs">
+            <button class="tab-btn active" onclick="switchWorkspaceTab('all')">🖥️ Complete Mission Control</button>
+            <button class="tab-btn" onclick="switchWorkspaceTab('execution')">⚡ Live Terminal &amp; Positions</button>
+            <button class="tab-btn" onclick="switchWorkspaceTab('risk')">🛡️ Unified Risk Sentinel</button>
+            <button class="tab-btn" onclick="switchWorkspaceTab('models')">🧠 Champion–Challenger Arena</button>
+            <button class="tab-btn" onclick="switchWorkspaceTab('audit')">🔒 SHA-256 Audit Trail</button>
+        </nav>
+
+        <!-- ==========================================================================
+             MAIN CONTENT GRID: LIVE EXECUTION TERMINAL
+             ========================================================================== -->
+        <main class="dashboard-grid" id="section-execution">
+            <!-- Left Column: Real-Time Market Watchlist -->
             <section class="panel watchlist-panel">
                 <div class="panel-header">
-                    <h2>Live Watchlist</h2>
+                    <h2>
+                        <span>Live Market Watchlist</span>
+                        <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">NSE Mode-Full</span>
+                    </h2>
                     <span class="timestamp" id="last-update-time">Last update: --:--:--</span>
                 </div>
-                
-                <div class="table-container">
+
+                <!-- Ticker Search / Filter -->
+                <div class="watchlist-filter-bar">
+                    <input type="text" class="search-input" id="watchlist-search-input" placeholder="🔍 Filter symbols (e.g. RELIANCE, HDFCBANK, INFY)..." oninput="filterWatchlist(this.value)">
+                </div>
+
+                <div class="table-container" style="max-height: 520px; overflow-y: auto;">
                     <table class="data-table" id="watchlist-table">
                         <thead>
                             <tr>
-                                <th>Symbol</th>
-                                <th>LTP</th>
-                                <th>Change</th>
-                                <th>Signal</th>
+                                <th>Symbol &amp; Latency</th>
+                                <th style="text-align: right;">LTP</th>
+                                <th style="text-align: right;">Change</th>
+                                <th style="text-align: center;">Signal</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <!-- Populated by JS -->
+                            <tr>
+                                <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                                    Waiting for live Zerodha market data stream...
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
             </section>
-            
-            <!-- Right Column: P&L & Positions -->
+
+            <!-- Right Column: Positions & Portfolio Holdings -->
             <section class="panel portfolio-panel">
-                <!-- P&L Summary Cards -->
-                <div class="pnl-summary">
-                    <div class="summary-card">
-                        <h3>Available Margin</h3>
-                        <div class="value" id="margin-val">₹--</div>
-                    </div>
-                    <div class="summary-card" style="border-left: 3px solid var(--accent-blue);">
-                        <h3>Overall Day Profit</h3>
-                        <div class="value positive" id="total-day-pnl-val">₹0.00</div>
-                    </div>
-                    <div class="summary-card">
-                        <h3>ML Rolling Acc</h3>
-                        <div class="value" id="ml-accuracy-val">--%</div>
-                        <div id="ml-drift-badge" style="font-size: 0.7rem; color: #10b981; margin-top: 2px;">Drift: STABLE</div>
-                    </div>
-                    <div class="summary-card">
-                        <h3>Paper Validation</h3>
-                        <div class="value positive" id="paper-verdict-val" style="font-size: 1.1rem;">IN PROGRESS</div>
-                        <div id="paper-sharpe-val" style="font-size: 0.7rem; color: var(--text-muted); margin-top: 2px;">Sharpe: -- | Day 0</div>
-                    </div>
-                    <div class="summary-card">
-                        <h3>Unrealized MTM</h3>
-                        <div class="value" id="unrealized-pnl-val">₹--</div>
-                    </div>
-                    <div class="summary-card">
-                        <h3>Realized P&L</h3>
-                        <div class="value positive" id="realized-pnl-val">₹--</div>
-                    </div>
+                <div class="panel-header">
+                    <h2>Open Active Positions</h2>
+                    <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">Trailing SL / TP Active</span>
                 </div>
 
-                <div class="panel-header" style="margin-top: 24px;">
-                    <h2>Open Positions</h2>
-                </div>
-                
-                <div class="table-container">
+                <div class="table-container" style="min-height: 180px; max-height: 240px; overflow-y: auto;">
                     <table class="data-table" id="positions-table">
                         <thead>
                             <tr>
                                 <th>Symbol</th>
-                                <th>Qty</th>
-                                <th>Avg Price</th>
-                                <th>LTP</th>
-                                <th>P&L</th>
-                                <th>Action</th>
+                                <th style="text-align: right;">Qty</th>
+                                <th style="text-align: right;">Avg Price</th>
+                                <th style="text-align: right;">LTP</th>
+                                <th style="text-align: right;">P&amp;L</th>
+                                <th style="text-align: center;">Action</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <!-- Populated by JS -->
+                            <tr>
+                                <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
+                                    No open positions. Risk engine monitoring for valid setups.
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
-                <div class="panel-header" style="margin-top: 24px;">
-                    <h2>Holdings (Portfolio)</h2>
+
+                <div class="sub-panel-header">
+                    <h3>Equity Holdings (Demat Portfolio)</h3>
+                    <span style="font-size: 0.72rem; color: var(--text-muted);">CNC Delivery Assets</span>
                 </div>
-                
+
                 <div class="table-container" style="max-height: 200px; overflow-y: auto;">
                     <table class="data-table" id="holdings-table">
                         <thead>
                             <tr>
                                 <th>Symbol</th>
-                                <th>Qty</th>
-                                <th>Avg Price</th>
-                                <th>LTP</th>
-                                <th>P&L</th>
+                                <th style="text-align: right;">Qty</th>
+                                <th style="text-align: right;">Avg Price</th>
+                                <th style="text-align: right;">LTP</th>
+                                <th style="text-align: right;">P&amp;L</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <!-- Populated by JS -->
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-            
-            <!-- Bottom Row: Autonomous Execution Stream -->
-            <section class="panel candidate-trades-panel">
-                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2>Autonomous AI Execution Stream (Zero Human Approval)</h2>
-                    <span class="signal-badge signal-buy" style="font-size: 0.75rem; padding: 4px 10px;">⚡ 100% AUTONOMOUS</span>
-                </div>
-                
-                <div class="table-container">
-                    <table class="data-table" id="candidate-trades-table">
-                        <thead>
                             <tr>
-                                <th>Symbol</th>
-                                <th>Action</th>
-                                <th>Price</th>
-                                <th>Qty / Capital</th>
-                                <th>AI Reasoning & Sizing</th>
-                                <th>Execution Status</th>
+                                <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">
+                                    No holdings detected in linked Zerodha account.
+                                </td>
                             </tr>
-                        </thead>
-                        <tbody>
-                            <tr id="no-candidates-row">
-                                <td colspan="6" style="text-align: center; color: var(--text-muted);">Autonomous execution engine active. Awaiting quantitative signals...</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-            
-            <!-- Unified Risk & Security Control Center Subsystems Panel -->
-            <section class="panel risk-control-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
-                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2>Unified Risk & Security Control Center</h2>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span id="control-center-state-pill" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 700; border: 1px solid #10b981;">STATUS: SAFE</span>
-                    </div>
-                </div>
-
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; padding: 0.75rem 0;">
-                    <!-- Subsystem 1: Audit Chain -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">1. AUDIT CHAIN</span>
-                            <span id="cc-audit-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">VERIFIED</span>
-                        </div>
-                        <div id="cc-audit-records" style="font-size: 1.1rem; font-weight: bold; color: white;">-- records</div>
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">SHA-256 Hash Chain</div>
-                    </div>
-
-                    <!-- Subsystem 2: Broker Reconciliation -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">2. BROKER SYNC</span>
-                            <span id="cc-reconcile-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">SYNCED</span>
-                        </div>
-                        <div id="cc-reconcile-details" style="font-size: 1.1rem; font-weight: bold; color: white;">0 Mismatches</div>
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Quarantine: <span id="cc-quarantine-count">0</span></div>
-                    </div>
-
-                    <!-- Subsystem 3: Anomaly Sentinel -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">3. ANOMALY SENTINEL</span>
-                            <span id="cc-anomaly-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">NOMINAL</span>
-                        </div>
-                        <div id="cc-anomaly-details" style="font-size: 1.1rem; font-weight: bold; color: white;">0 Critical</div>
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Auto-Halt Armed</div>
-                    </div>
-
-                    <!-- Subsystem 4: Portfolio Risk -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">4. PORTFOLIO RISK</span>
-                            <span id="cc-portfolio-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">COMPLIANT</span>
-                        </div>
-                        <div id="cc-portfolio-max-sec" style="font-size: 1.1rem; font-weight: bold; color: white;">Max Sec: 0%</div>
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">VaR &lt; 5% | Cap 35%</div>
-                    </div>
-
-                    <!-- Subsystem 5: Model Champion-Challenger -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">5. AI MODEL HEALTH</span>
-                            <span id="cc-model-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">ACTIVE</span>
-                        </div>
-                        <div id="cc-champ-acc" style="font-size: 1.1rem; font-weight: bold; color: white;">Acc: --%</div>
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Shadow Lead: <span id="cc-shadow-delta">0%</span></div>
-                    </div>
-
-                    <!-- Subsystem 6: Kill-Switch -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                            <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">6. CIRCUIT BREAKER</span>
-                            <span id="cc-killswitch-status" style="font-size: 0.7rem; color: #10b981; font-weight: 600;">ARMED</span>
-                        </div>
-                        <div id="cc-killswitch-state" style="font-size: 1.1rem; font-weight: bold; color: #10b981;">STANDBY</div>
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 4px;">Safe Guard Active</div>
-                    </div>
-                </div>
-
-                <!-- Alert Reasons List (if any) -->
-                <div id="cc-reasons-container" style="display: none; margin-top: 8px; padding: 10px 14px; background: rgba(239, 68, 68, 0.1); border-left: 3px solid #ef4444; border-radius: 4px;">
-                    <span style="font-size: 0.8rem; font-weight: 600; color: #ef4444;">Active Risk Alerts:</span>
-                    <ul id="cc-reasons-list" style="margin: 4px 0 0 16px; padding: 0; font-size: 0.75rem; color: #fca5a5;"></ul>
-                </div>
-            </section>
-
-            <!-- Model Champion-Challenger & Rollback Panel -->
-            <section class="panel model-registry-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
-                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2>AI Model Champion–Challenger & Shadow Rollback</h2>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span id="model-registry-badge" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 600; border: 1px solid #10b981;">🏆 Champion Active</span>
-                    </div>
-                </div>
-
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; padding: 0.75rem 0;">
-                    <!-- Champion Model Card -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <span style="font-weight: 600; color: #60a5fa; font-size: 0.85rem;">ACTIVE CHAMPION</span>
-                            <span id="champ-version-badge" style="font-size: 0.7rem; background: #1e3a8a; color: #bfdbfe; padding: 2px 6px; border-radius: 4px;">v1.0</span>
-                        </div>
-                        <div id="champ-model-name" style="font-size: 1.1rem; font-weight: bold; color: white;">GradientBoost-Intraday-Alpha</div>
-                        <div style="display: flex; justify-content: space-between; margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px;">
-                            <div>
-                                <div style="font-size: 0.7rem; color: var(--text-muted);">Rolling Accuracy (N=20)</div>
-                                <div id="champ-acc-val" style="font-size: 1.3rem; font-weight: bold; color: #10b981;">--%</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 0.7rem; color: var(--text-muted);">Total Evaluations</div>
-                                <div id="champ-evals-val" style="font-size: 1.3rem; font-weight: bold; color: white;">0</div>
-                            </div>
-                        </div>
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 8px;">
-                            Min accuracy safety threshold: <strong>45.0%</strong>
-                        </div>
-                    </div>
-
-                    <!-- Challenger Model Card (Shadow Mode) -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <span style="font-weight: 600; color: #f59e0b; font-size: 0.85rem;">CHALLENGER (SHADOW MODE)</span>
-                            <span id="chall-version-badge" style="font-size: 0.7rem; background: #78350f; color: #fde68a; padding: 2px 6px; border-radius: 4px;">v2.0-rc</span>
-                        </div>
-                        <div id="chall-model-name" style="font-size: 1.1rem; font-weight: bold; color: white;">Hybrid-LSTM-Transformer</div>
-                        <div style="display: flex; justify-content: space-between; margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px;">
-                            <div>
-                                <div style="font-size: 0.7rem; color: var(--text-muted);">Shadow Rolling Acc</div>
-                                <div id="chall-acc-val" style="font-size: 1.3rem; font-weight: bold; color: #f59e0b;">--%</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 0.7rem; color: var(--text-muted);">Win Delta vs Champ</div>
-                                <div id="chall-delta-val" style="font-size: 1.3rem; font-weight: bold; color: white;">+0.0%</div>
-                            </div>
-                        </div>
-                        <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
-                            <span style="font-size: 0.7rem; color: var(--text-muted);">Auto-Promote at &ge; +5% Lead</span>
-                            <button id="btn-promote-challenger" onclick="promoteChallenger()" style="padding: 4px 10px; font-size: 0.75rem; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">⚡ Promote Now</button>
-                        </div>
-                    </div>
-
-                    <!-- Fallback & Rollback Card -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <span style="font-weight: 600; color: #ec4899; font-size: 0.85rem;">FALLBACK & CIRCUIT BREAKER</span>
-                            <span style="font-size: 0.7rem; background: #831843; color: #fbcfe8; padding: 2px 6px; border-radius: 4px;">STANDBY</span>
-                        </div>
-                        <div id="fallback-model-name" style="font-size: 1.1rem; font-weight: bold; color: white;">Rule-Based Deterministic Engine</div>
-                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 8px; line-height: 1.4;">
-                            Automated failover engages if Champion accuracy drops below 45% or kill-switch is triggered (&lt; 35%).
-                        </div>
-                        <div style="margin-top: 14px; text-align: right;">
-                            <button id="btn-rollback-champion" onclick="rollbackChampion()" style="padding: 6px 12px; font-size: 0.75rem; background: #374151; color: white; border: 1px solid #4b5563; border-radius: 4px; cursor: pointer; font-weight: 600;">🔄 Rollback Champion</button>
-                        </div>
-                    </div>
-                </div>
-            </section>
-            
-            <!-- Sector Concentration & VaR Risk Management Panel -->
-            <section class="panel sector-risk-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
-                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2>Institutional Portfolio Risk & Sector Concentration</h2>
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span id="var-risk-badge" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 600; border: 1px solid #10b981;">🛡️ 1-Day 95% VaR: Safe (&lt; 5%)</span>
-                        <span id="sector-risk-badge" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(59, 130, 246, 0.2); color: #60a5fa; font-weight: 600; border: 1px solid #3b82f6;">Sector Cap: 35% Max</span>
-                    </div>
-                </div>
-                
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; padding: 0.75rem 0;">
-                    <!-- VaR / CVaR Summary Card -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <span style="font-weight: 600; color: var(--text-muted); font-size: 0.85rem;">PORTFOLIO VALUE AT RISK (VaR)</span>
-                            <span id="var-confidence-label" style="font-size: 0.75rem; color: var(--accent-blue);">95% Confidence</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
-                            <div>
-                                <div style="font-size: 0.75rem; color: var(--text-muted);">Parametric 1-Day VaR</div>
-                                <div id="param-var-val" style="font-size: 1.25rem; font-weight: bold; color: #10b981;">0.00%</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 0.75rem; color: var(--text-muted);">Expected Shortfall (CVaR)</div>
-                                <div id="param-cvar-val" style="font-size: 1.25rem; font-weight: bold; color: #f59e0b;">0.00%</div>
-                            </div>
-                        </div>
-                        <div style="font-size: 0.75rem; color: var(--text-muted); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
-                            <span>Historical VaR: <strong id="hist-var-val" style="color: white;">0.00%</strong></span> | 
-                            <span>CVaR: <strong id="hist-cvar-val" style="color: white;">0.00%</strong></span>
-                        </div>
-                    </div>
-
-                    <!-- Sector Exposure Breakdown -->
-                    <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <span style="font-weight: 600; color: var(--text-muted); font-size: 0.85rem;">SECTOR ALLOCATION & CONCENTRATION</span>
-                            <span id="sector-compliance-status" style="font-size: 0.75rem; color: #10b981; font-weight: 600;">COMPLIANT</span>
-                        </div>
-                        <div id="sector-bars-container" style="display: flex; flex-direction: column; gap: 8px;">
-                            <div style="font-size: 0.8rem; color: var(--text-muted);">No open positions. Capital fully diversified.</div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-            
-            <!-- Audit Log Panel -->
-            <section class="panel audit-log-panel" style="grid-column: 1 / -1; margin-top: 1rem;">
-                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2>Audit Log & Cryptographic Order History</h2>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span id="audit-chain-badge" style="font-size: 0.75rem; padding: 4px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 600; border: 1px solid #10b981;">🔒 SHA-256 Chain Verified</span>
-                        <button onclick="verifyAuditChain()" style="padding: 4px 8px; font-size: 0.75rem; background: #374151; color: white; border: none; border-radius: 4px; cursor: pointer;">Verify Integrity</button>
-                    </div>
-                </div>
-                
-                <div class="table-container" style="max-height: 400px; overflow-y: auto;">
-                    <table class="data-table" id="audit-log-table">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Type</th>
-                                <th>Trade ID</th>
-                                <th>Symbol</th>
-                                <th>Action</th>
-                                <th>Details</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <!-- Populated by JS -->
                         </tbody>
                     </table>
                 </div>
             </section>
         </main>
+
+        <!-- ==========================================================================
+             AUTONOMOUS AI EXECUTION STREAM (ZERO HUMAN INTERVENTION)
+             ========================================================================== -->
+        <section class="panel candidate-trades-panel" id="section-candidate-trades">
+            <div class="panel-header">
+                <h2>
+                    <span>⚡ 100% Autonomous AI Execution Stream</span>
+                    <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981;">
+                        Zero Human Approval Required
+                    </span>
+                </h2>
+                <span class="badge" style="background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.3);">
+                    Deterministic Python Risk Firewall Gated
+                </span>
+            </div>
+
+            <div class="table-container" style="max-height: 380px; overflow-y: auto;">
+                <table class="data-table" id="candidate-trades-table">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Action</th>
+                            <th style="text-align: right;">Price</th>
+                            <th style="text-align: right;">Qty / Capital</th>
+                            <th>Quantitative Reasoning &amp; ATR Sizing</th>
+                            <th style="text-align: center;">Execution Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr id="no-candidates-row">
+                            <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                                Autonomous quantitative execution pipeline active. Awaiting verified technical &amp; ML signals...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- ==========================================================================
+             UNIFIED RISK & SECURITY CONTROL CENTER (6 SUBSYSTEM MATRIX)
+             ========================================================================== -->
+        <section class="panel risk-control-panel" id="section-risk">
+            <div class="panel-header">
+                <h2>
+                    <span>🛡️ Institutional Risk &amp; Security Control Center</span>
+                    <span class="badge" id="control-center-state-pill" style="border: 1px solid #10b981; color: #10b981; background: rgba(16, 185, 129, 0.2);">
+                        STATUS: SAFE
+                    </span>
+                </h2>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <button class="btn btn-emergency" onclick="triggerEmergencyHaltRiskCenter()" style="padding: 5px 12px; font-size: 0.75rem;">
+                        🚨 Engage System Halt
+                    </button>
+                    <button class="btn" id="btn-resume-system" onclick="resumeRiskCenter()" style="display: none; background: #10b981; color: white; padding: 5px 12px; font-size: 0.75rem;">
+                        ✅ Authorize Resume
+                    </button>
+                </div>
+            </div>
+
+            <!-- Unified Risk Health Banner -->
+            <div class="unified-risk-banner" id="unified-risk-banner">
+                <div class="risk-banner-left">
+                    <span class="risk-status-badge" id="risk-center-status-badge" style="background: #10b981; color: #111827;">
+                        🟢 SYSTEM SAFE
+                    </span>
+                    <span class="risk-summary-text" id="risk-center-summary-text">
+                        All 6 safety subsystems operating within institutional risk parameters.
+                    </span>
+                </div>
+            </div>
+
+            <!-- 6 Subsystems Status Grid -->
+            <div class="risk-subsystems-grid">
+                <!-- 1. Audit Chain -->
+                <div class="subsystem-card">
+                    <div class="subsystem-title">1. Audit Chain</div>
+                    <div class="subsystem-status positive" id="cc-audit-status">VERIFIED</div>
+                    <div class="subsystem-detail" id="cc-audit-records">-- events</div>
+                </div>
+
+                <!-- 2. Broker Ledger Sync -->
+                <div class="subsystem-card">
+                    <div class="subsystem-title">2. Broker Sync</div>
+                    <div class="subsystem-status positive" id="cc-reconcile-status">SYNCHRONIZED</div>
+                    <div class="subsystem-detail" id="cc-reconcile-details">0 Mismatches</div>
+                    <div style="font-size: 0.65rem; color: var(--text-muted); margin-top: 2px;">
+                        Quarantine: <strong id="cc-quarantine-count" style="color: white;">0</strong>
+                    </div>
+                </div>
+
+                <!-- 3. Anomaly Sentinel -->
+                <div class="subsystem-card">
+                    <div class="subsystem-title">3. Anomaly Sentinel</div>
+                    <div class="subsystem-status positive" id="cc-anomaly-status">NORMAL</div>
+                    <div class="subsystem-detail" id="cc-anomaly-details">0 Critical</div>
+                </div>
+
+                <!-- 4. Portfolio Risk -->
+                <div class="subsystem-card">
+                    <div class="subsystem-title">4. Portfolio Risk</div>
+                    <div class="subsystem-status positive" id="cc-portfolio-status">COMPLIANT</div>
+                    <div class="subsystem-detail" id="cc-portfolio-max-sec">Max Sec: --%</div>
+                </div>
+
+                <!-- 5. Model Registry -->
+                <div class="subsystem-card">
+                    <div class="subsystem-title">5. Model Registry</div>
+                    <div class="subsystem-status positive" id="cc-model-status">ACTIVE</div>
+                    <div class="subsystem-detail" id="cc-champ-acc">Acc: --%</div>
+                    <div style="font-size: 0.65rem; color: var(--text-muted); margin-top: 2px;">
+                        Shadow Lead: <strong id="cc-shadow-delta" style="color: white;">+0.0%</strong>
+                    </div>
+                </div>
+
+                <!-- 6. Kill Switch -->
+                <div class="subsystem-card">
+                    <div class="subsystem-title">6. Kill Switch</div>
+                    <div class="subsystem-status positive" id="cc-killswitch-status">ARMED</div>
+                    <div class="subsystem-detail" id="cc-killswitch-state">STANDBY</div>
+                </div>
+            </div>
+
+            <!-- Risk Reasons Alert List -->
+            <div id="cc-reasons-container" style="display: none; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 8px; padding: 12px; margin-top: 10px;">
+                <div style="font-weight: 700; color: #f87171; font-size: 0.8rem; margin-bottom: 6px;">Active Risk Interventions:</div>
+                <ul id="cc-reasons-list" style="margin-left: 20px; font-size: 0.75rem; color: #fecaca; line-height: 1.5;"></ul>
+            </div>
+        </section>
+
+        <!-- ==========================================================================
+             VALUE AT RISK (VaR) & SECTOR CONCENTRATION
+             ========================================================================== -->
+        <section class="panel sector-risk-panel" id="section-var">
+            <div class="panel-header">
+                <h2>Institutional Value at Risk (VaR) &amp; Sector Concentration</h2>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="var-risk-badge" class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid #10b981;">
+                        🛡️ 1-Day 95% VaR: Safe (&lt; 5%)
+                    </span>
+                    <span id="sector-risk-badge" class="badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #3b82f6;">
+                        Sector Cap: 35% Max
+                    </span>
+                </div>
+            </div>
+
+            <div class="arena-grid">
+                <!-- VaR / CVaR Analytical Card -->
+                <div class="arena-card">
+                    <div class="arena-card-header">
+                        <span class="arena-card-title" style="color: var(--text-muted);">Parametric &amp; Historical VaR</span>
+                        <span id="var-confidence-label" class="badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa;">95% Confidence</span>
+                    </div>
+
+                    <div class="metric-strip-2col">
+                        <div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase;">1-Day Parametric VaR</div>
+                            <div id="param-var-val" class="value positive" style="font-size: 1.4rem;">0.00%</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase;">Expected Shortfall (CVaR)</div>
+                            <div id="param-cvar-val" class="value" style="font-size: 1.4rem; color: #f59e0b;">0.00%</div>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); padding-top: 4px;">
+                        <span>Historical 1-Day VaR: <strong id="hist-var-val" style="color: white;">0.00%</strong></span>
+                        <span>Historical CVaR: <strong id="hist-cvar-val" style="color: white;">0.00%</strong></span>
+                    </div>
+                </div>
+
+                <!-- Sector Exposure Visualizer -->
+                <div class="arena-card">
+                    <div class="arena-card-header">
+                        <span class="arena-card-title" style="color: var(--text-muted);">Sector Allocation &amp; Diversification</span>
+                        <span id="sector-compliance-status" class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981;">
+                            COMPLIANT
+                        </span>
+                    </div>
+
+                    <div id="sector-bars-container" style="display: flex; flex-direction: column; gap: 8px; min-height: 80px; justify-content: center;">
+                        <div style="font-size: 0.78rem; color: var(--text-muted); text-align: center;">
+                            No active long/short positions. Capital fully diversified in cash buffer.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==========================================================================
+             AI MODEL CHAMPION–CHALLENGER ARENA & ROLLBACK SENTINEL
+             ========================================================================== -->
+        <section class="panel model-registry-panel" id="section-models">
+            <div class="panel-header">
+                <h2>
+                    <span>🧠 AI Champion–Challenger Shadow Arena</span>
+                    <span id="model-registry-badge" class="badge" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981;">
+                        🏆 Champion Active
+                    </span>
+                </h2>
+                <span class="badge" style="background: rgba(255, 255, 255, 0.05); color: var(--text-muted);">
+                    N=20 Rolling Window
+                </span>
+            </div>
+
+            <div class="arena-grid">
+                <!-- Champion Model Card -->
+                <div class="arena-card" style="border-top: 3px solid #3b82f6;">
+                    <div class="arena-card-header">
+                        <span class="arena-card-title" style="color: #60a5fa;">Active Champion (Production)</span>
+                        <span id="champ-version-badge" class="badge" style="background: #1e3a8a; color: #bfdbfe;">v1.0</span>
+                    </div>
+                    <div class="arena-model-name" id="champ-model-name">GradientBoost-Intraday-Alpha</div>
+
+                    <div class="metric-strip-2col">
+                        <div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">Rolling Accuracy</div>
+                            <div id="champ-acc-val" class="value positive" style="font-size: 1.4rem;">--%</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">Total Evaluations</div>
+                            <div id="champ-evals-val" class="value" style="font-size: 1.4rem; color: white;">0</div>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.72rem; color: var(--text-muted);">
+                        Min accuracy safety threshold: <strong style="color: #f87171;">45.0%</strong>
+                    </div>
+                </div>
+
+                <!-- Challenger Model Card (Shadow Mode) -->
+                <div class="arena-card" style="border-top: 3px solid #f59e0b;">
+                    <div class="arena-card-header">
+                        <span class="arena-card-title" style="color: #f59e0b;">Challenger (Shadow Mode)</span>
+                        <span id="chall-version-badge" class="badge" style="background: #78350f; color: #fde68a;">v2.0-rc</span>
+                    </div>
+                    <div class="arena-model-name" id="chall-model-name">Hybrid-LSTM-Transformer</div>
+
+                    <div class="metric-strip-2col">
+                        <div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">Shadow Rolling Acc</div>
+                            <div id="chall-acc-val" class="value" style="font-size: 1.4rem; color: #f59e0b;">--%</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">Win Delta vs Champ</div>
+                            <div id="chall-delta-val" class="value" style="font-size: 1.4rem; color: white;">+0.0%</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                        <span id="chall-gate-label" style="font-size: 0.68rem; color: var(--text-muted);">
+                            Gate: 50 Trades &bull; +PnL &bull; &ge;55% Acc
+                        </span>
+                        <button id="btn-promote-challenger" onclick="promoteChallenger()" class="btn" style="background: #2563eb; color: white; padding: 4px 10px; font-size: 0.75rem;">
+                            ⚡ Promote Now
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Fallback & Rollback Card -->
+                <div class="arena-card" style="border-top: 3px solid #ec4899;">
+                    <div class="arena-card-header">
+                        <span class="arena-card-title" style="color: #ec4899;">Fallback &amp; Circuit Breaker</span>
+                        <span class="badge" style="background: #831843; color: #fbcfe8;">STANDBY</span>
+                    </div>
+                    <div class="arena-model-name" id="fallback-model-name">Rule-Based Deterministic Engine</div>
+
+                    <div style="font-size: 0.74rem; color: var(--text-secondary); line-height: 1.5; margin: 12px 0;">
+                        Automated failover engages instantly if Champion accuracy drops below <strong>45%</strong> or kill-switch is triggered (&lt; 35%).
+                    </div>
+                    <div style="text-align: right; margin-top: 8px;">
+                        <button id="btn-rollback-champion" onclick="rollbackChampion()" class="btn" style="background: rgba(255, 255, 255, 0.05); color: #cbd5e1; border: 1px solid var(--border-medium); font-size: 0.75rem;">
+                            🔄 Force Rollback
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==========================================================================
+             CRYPTOGRAPHIC SHA-256 AUDIT LOG & ORDER TRAIL
+             ========================================================================== -->
+        <section class="panel audit-log-panel" id="section-audit">
+            <div class="panel-header">
+                <h2>
+                    <span>🔒 Cryptographic Audit Log &amp; Order Forensics</span>
+                    <span id="audit-chain-badge" class="badge" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981;">
+                        🔒 SHA-256 Chain Verified
+                    </span>
+                </h2>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <button class="btn btn-reconcile" onclick="verifyAuditChain()" style="padding: 4px 10px; font-size: 0.74rem;">
+                        Verify Block Integrity
+                    </button>
+                </div>
+            </div>
+
+            <div class="table-container" style="max-height: 420px; overflow-y: auto;">
+                <table class="data-table" id="audit-log-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 100px;">Time</th>
+                            <th style="width: 120px;">Event Type</th>
+                            <th style="width: 140px;">Trade ID</th>
+                            <th style="width: 100px;">Symbol</th>
+                            <th style="width: 80px;">Action</th>
+                            <th>Cryptographic Block &amp; Order Forensics</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                                Loading tamper-evident SHA-256 audit ledger...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
     </div>
 
-    <script src="/static/app.js?v=10"></script>
-</body>
-</html>
+    <!-- ==========================================================================
+         PAPER VALIDATION REPORT MODAL
+         ========================================================================== -->
+    <div id="paper-report-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>📊 3–7 Day Paper-Trading Forward Validation Report</h2>
+                <button class="modal-close-btn" onclick="closePaperReportModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="paper-report-content" style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; line-height: 1.6; background: rgba(0, 0, 0, 0.35); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); white-space: pre-wrap; color: #e2e8f0;">
+                    Loading quantitative validation report...
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-reconcile" onclick="copyPaperReport()">📋 Copy Report</button>
+                <button class="btn" onclick="closePaperReportModal()" style="background: rgba(255, 255, 255, 0.08); color: white;">Close</button>
+            </div>
+        </div>
+    </div>
 
+    <!-- ==========================================================================
+         TOAST NOTIFICATION STACK
+         ========================================================================== -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- Core Terminal Controller -->
+    <script src="/static/app.js?v=20"></script>
+
+    <!-- UI Tab & Interactive Enhancements -->
+    <script>
+        // Workspace Tab Switcher
+        function switchWorkspaceTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
+
+            const execSection = document.getElementById('section-execution');
+            const tradesSection = document.getElementById('section-candidate-trades');
+            const riskSection = document.getElementById('section-risk');
+            const varSection = document.getElementById('section-var');
+            const modelsSection = document.getElementById('section-models');
+            const auditSection = document.getElementById('section-audit');
+
+            if (tabId === 'all') {
+                execSection.style.display = 'grid';
+                tradesSection.style.display = 'block';
+                riskSection.style.display = 'block';
+                varSection.style.display = 'block';
+                modelsSection.style.display = 'block';
+                auditSection.style.display = 'block';
+            } else if (tabId === 'execution') {
+                execSection.style.display = 'grid';
+                tradesSection.style.display = 'block';
+                riskSection.style.display = 'none';
+                varSection.style.display = 'none';
+                modelsSection.style.display = 'none';
+                auditSection.style.display = 'none';
+            } else if (tabId === 'risk') {
+                execSection.style.display = 'none';
+                tradesSection.style.display = 'none';
+                riskSection.style.display = 'block';
+                varSection.style.display = 'block';
+                modelsSection.style.display = 'none';
+                auditSection.style.display = 'none';
+            } else if (tabId === 'models') {
+                execSection.style.display = 'none';
+                tradesSection.style.display = 'none';
+                riskSection.style.display = 'none';
+                varSection.style.display = 'none';
+                modelsSection.style.display = 'block';
+                auditSection.style.display = 'none';
+            } else if (tabId === 'audit') {
+                execSection.style.display = 'none';
+                tradesSection.style.display = 'none';
+                riskSection.style.display = 'none';
+                varSection.style.display = 'none';
+                modelsSection.style.display = 'none';
+                auditSection.style.display = 'block';
+            }
+        }
+
+        // Live Watchlist Filtering
+        function filterWatchlist(query) {
+            const filter = query.toUpperCase().trim();
+            const rows = document.querySelectorAll('#watchlist-table tbody tr[data-symbol]');
+            rows.forEach(row => {
+                const sym = row.getAttribute('data-symbol') || '';
+                if (!filter || sym.toUpperCase().includes(filter)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        }
+
+        // Copy Paper Report Utility
+        function copyPaperReport() {
+            const el = document.getElementById('paper-report-content');
+            if (el) {
+                navigator.clipboard.writeText(el.textContent);
+                showToast('Report copied to clipboard', 'success');
+            }
+        }
+
+        // Floating Toast Notification Utility
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `${type === 'success' ? '✅' : '⚠️'} <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(10px)';
+                toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+
+        // Modal escape key dismiss
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closePaperReportModal();
+            }
+        });
+    </script>
+</body>
+
+</html>

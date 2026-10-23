@@ -74,27 +74,33 @@ async def test_trade_action_reject(client):
 @pytest.mark.anyio
 async def test_trade_action_approve_pipeline(client):
     app.main.EMERGENCY_STOP_ACTIVE = False
-    trade_id = "test_trade_approve_1"
-    app.main.candidate_cache[trade_id] = {
-        "id": trade_id,
-        "symbol": "TATASTEEL",
-        "action": "BUY",
-        "price": 174.0,
-        "stop_loss": 170.0,
-        "take_target": 182.0,
-        "qty": 10,
-        "reasoning": "Bullish breakout signal"
-    }
-    
-    payload = {
-        "trade_id": trade_id,
-        "action": "APPROVE"
-    }
-    response = await client.post("/api/v1/trades/action", json=payload)
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "success"
-    assert "broker_order_id" in data
+    app.main.position_manager._positions.clear()
+    orig_hours = app.main.risk_engine.config.check_market_hours
+    app.main.risk_engine.config.check_market_hours = False
+    try:
+        trade_id = "test_trade_approve_1"
+        app.main.candidate_cache[trade_id] = {
+            "id": trade_id,
+            "symbol": "TATASTEEL",
+            "action": "BUY",
+            "price": 174.0,
+            "stop_loss": 170.0,
+            "take_target": 182.0,
+            "qty": 10,
+            "reasoning": "Bullish breakout signal"
+        }
+        
+        payload = {
+            "trade_id": trade_id,
+            "action": "APPROVE"
+        }
+        response = await client.post("/api/v1/trades/action", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert "broker_order_id" in data
+    finally:
+        app.main.risk_engine.config.check_market_hours = orig_hours
 
 @pytest.mark.anyio
 async def test_trade_action_blocked_by_emergency_stop(client):

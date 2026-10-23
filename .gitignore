@@ -9,9 +9,15 @@ __pycache__/
 
 # Databases & Logs
 *.log
+*.db
+*.db-journal
 trading_agent.db*
+trades.db*
 dry_run_state.json
 audit.jsonl
+ml_monitor_records.json
+model_registry.json
+paper_trading_journal.json
 
 # React / Node.js (Dashboard)
 dashboard/node_modules/

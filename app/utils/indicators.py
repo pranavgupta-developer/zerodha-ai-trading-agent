@@ -174,13 +174,13 @@ def calculate_vwap(highs: List[float], lows: List[float], closes: List[float], v
             
     return result
 
-def get_feature_snapshot(candles: List[Any]) -> Dict[str, Optional[float]]:
+def get_feature_snapshot(candles: List[Any], current_price: Optional[float] = None) -> Dict[str, Optional[float]]:
     """
-    Given a list of recent Candle objects, calculates indicators and returns latest values.
+    Given a list of recent Candle objects and an optional current_price, calculates indicators and returns latest values.
     Assumes candles have: close, high, low, volume attributes.
     """
     if not candles:
-        return {}
+        return {"price": float(current_price)} if current_price is not None else {}
         
     closes = [float(c.close) for c in candles]
     highs = [float(c.high) for c in candles]
@@ -195,8 +195,10 @@ def get_feature_snapshot(candles: List[Any]) -> Dict[str, Optional[float]]:
     atr_14 = calculate_atr(highs, lows, closes)
     vwap = calculate_vwap(highs, lows, closes, volumes)
     
+    latest_price = float(current_price) if current_price is not None else closes[-1]
+    
     return {
-        "price": closes[-1],
+        "price": latest_price,
         "sma_20": sma_20[-1] if sma_20 else None,
         "ema_20": ema_20[-1] if ema_20 else None,
         "rsi_14": rsi_14[-1] if rsi_14 else None,

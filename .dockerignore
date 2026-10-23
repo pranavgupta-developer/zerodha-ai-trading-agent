@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and Runtime State
+*.log
+app.log*
+backend.log*
+scratch_import.log*
+audit.jsonl*
+trading_agent.db*
+trades.db*
+dry_run_state.json*
+ml_monitor_records.json*
+model_registry.json*
+
+# Environment and Secrets
+.env
+.kite_session
+
+# Frontend build artifacts
+dashboard/node_modules/
+dashboard/dist/
+.DS_Store
+.idea/
+.vscode/

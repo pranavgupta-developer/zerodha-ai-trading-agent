@@ -33,9 +33,18 @@ def get_market_status(latest_tick_time: Optional[datetime] = None, stale_thresho
     if is_market_holiday(now.date()):
         return "CLOSED"
         
-    # 3. Check market hours (9:15 AM - 3:30 PM IST)
-    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    # 3. Check market hours (configurable via settings, e.g. 9:30 or 9:15 AM - 3:30 PM IST)
+    try:
+        from app.core.config import settings
+        open_h = getattr(settings, "MARKET_OPEN_HOUR", 9)
+        open_m = getattr(settings, "MARKET_OPEN_MINUTE", 15)
+        close_h = getattr(settings, "MARKET_CLOSE_HOUR", 15)
+        close_m = getattr(settings, "MARKET_CLOSE_MINUTE", 30)
+    except Exception:
+        open_h, open_m, close_h, close_m = 9, 15, 15, 30
+
+    market_open = now.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+    market_close = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
     
     if now < market_open or now > market_close:
         return "CLOSED"

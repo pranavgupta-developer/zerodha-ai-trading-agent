@@ -1,7 +1,7 @@
 // Real-time Data for the Dashboard
-const mockWatchlist = [];
-const mockPositions = [];
-const mockHoldings = [];
+const liveWatchlist = [];
+const livePositions = [];
+const liveHoldings = [];
 const prevLtpMap = {};
 window.isWebSocketConnected = false;
 
@@ -17,8 +17,8 @@ function updatePnlSummary(realized = null, unrealized = null) {
     if (realized !== null && !isNaN(realized)) currentRealizedPnl = Number(realized);
     if (unrealized !== null && !isNaN(unrealized)) currentUnrealizedPnl = Number(unrealized);
 
-    // Overall Day Profit represents value already gained by Buying and Selling of stocks (Realized)
-    const totalDayProfit = currentRealizedPnl;
+    // Overall Day Profit represents net day P&L (Realized + Unrealized)
+    const totalDayProfit = currentRealizedPnl + currentUnrealizedPnl;
 
     const totalDayEl = document.getElementById('total-day-pnl-val');
     if (totalDayEl) {
@@ -51,7 +51,7 @@ function renderWatchlist() {
     const tbody = document.querySelector('#watchlist-table tbody');
     if (!tbody) return;
 
-    if (mockWatchlist.length === 0) {
+    if (liveWatchlist.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Waiting for market data...</td></tr>';
         return;
     }
@@ -66,7 +66,7 @@ function renderWatchlist() {
     const emptyRow = tbody.querySelector('td[colspan]');
     if (emptyRow) tbody.innerHTML = '';
 
-    mockWatchlist.forEach(item => {
+    liveWatchlist.forEach(item => {
         const sym = item.symbol;
         const prevPrice = prevLtpMap[sym];
         let flashClass = '';
@@ -111,14 +111,14 @@ function renderPositions() {
     const tbody = document.querySelector('#positions-table tbody');
     if (!tbody) return;
 
-    if (mockPositions.length === 0) {
+    if (livePositions.length === 0) {
         tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No open positions.</td></tr>';
         updatePnlSummary(null, 0.0);
         return;
     }
 
     let totalUnrealized = 0;
-    const currentSymbols = new Set(mockPositions.map(p => p.symbol));
+    const currentSymbols = new Set(livePositions.map(p => p.symbol));
     tbody.querySelectorAll('tr[data-symbol]').forEach(tr => {
         const sym = tr.getAttribute('data-symbol');
         if (!currentSymbols.has(sym)) tr.remove();
@@ -132,7 +132,7 @@ function renderPositions() {
     const emptyRow = tbody.querySelector('td[colspan]');
     if (emptyRow) tbody.innerHTML = '';
 
-    mockPositions.forEach(pos => {
+    livePositions.forEach(pos => {
         const qty = Math.abs(Number(pos.qty || 0));
         const pnl = pos.pnl !== undefined ? pos.pnl : ((pos.ltp - pos.avg) * qty);
         totalUnrealized += pnl;
@@ -174,7 +174,7 @@ function renderHoldings() {
     const tbody = document.querySelector('#holdings-table tbody');
     if (!tbody) return;
 
-    if (mockHoldings.length === 0) {
+    if (liveHoldings.length === 0) {
         tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">No holdings in portfolio.</td></tr>';
         return;
     }
@@ -187,7 +187,7 @@ function renderHoldings() {
     const emptyRow = tbody.querySelector('td[colspan]');
     if (emptyRow) tbody.innerHTML = '';
 
-    mockHoldings.forEach(hold => {
+    liveHoldings.forEach(hold => {
         const symbol = hold.tradingsymbol || hold.symbol;
         const qty = hold.quantity || hold.qty;
         const avg = hold.average_price || hold.avg || 0;
@@ -216,18 +216,18 @@ function renderHoldings() {
 
 function handleMarketUpdate(data) {
     if (data.watchlist && data.watchlist.length > 0) {
-        mockWatchlist.length = 0;
-        mockWatchlist.push(...data.watchlist);
+        liveWatchlist.length = 0;
+        liveWatchlist.push(...data.watchlist);
     }
     
     if (data.positions !== undefined) {
-        mockPositions.length = 0;
-        mockPositions.push(...data.positions);
+        livePositions.length = 0;
+        livePositions.push(...data.positions);
     }
     
     if (data.holdings !== undefined) {
-        mockHoldings.length = 0;
-        mockHoldings.push(...data.holdings);
+        liveHoldings.length = 0;
+        liveHoldings.push(...data.holdings);
     }
     
     if (data.account_stats) {
@@ -616,13 +616,52 @@ async function fetchSystemStatus() {
         const data = await response.json();
         updateEmergencyStopUI(data.emergency_stop_active);
         
-        const badge = document.querySelector('.logo .badge');
+        const badge = document.querySelector('#trading-mode-badge, .logo .badge, .brand-cluster .badge');
         if (badge && data.trading_mode) {
-            badge.textContent = data.trading_mode;
+            badge.textContent = data.trading_mode === 'DRY_RUN' ? 'DRY RUN' : data.trading_mode;
             if (data.trading_mode === 'LIVE') {
                 badge.className = 'badge mode-live';
             } else {
                 badge.className = 'badge mode-dry';
+            }
+        }
+
+        // Telemetry broker status
+        const brokerDot = document.getElementById('broker-status-dot');
+        const brokerText = document.getElementById('broker-status-text');
+        if (brokerDot && brokerText) {
+            if (data.zerodha_authenticated) {
+                brokerDot.className = 'status-dot online';
+                brokerText.textContent = 'Kite API Connected';
+            } else {
+                brokerDot.className = 'status-dot offline';
+                brokerText.textContent = 'Kite API Offline';
+            }
+        }
+
+        // Market operational status
+        const marketDot = document.getElementById('market-status-dot');
+        const marketText = document.getElementById('market-status-text');
+        if (marketDot && marketText) {
+            if (data.market_open) {
+                marketDot.className = 'status-dot online';
+                marketText.textContent = `NSE Open (${data.market_hours || '09:15-15:30'})`;
+            } else {
+                marketDot.className = 'status-dot offline';
+                marketText.textContent = `NSE Closed (${data.market_hours || '09:15-15:30'})`;
+            }
+        }
+
+        // Autonomous agent loop status
+        const agentDot = document.getElementById('agent-status-dot');
+        const agentText = document.getElementById('agent-status-text');
+        if (agentDot && agentText) {
+            if (data.emergency_stop_active) {
+                agentDot.className = 'status-dot offline';
+                agentText.textContent = 'Agent Halted (Kill-Switch)';
+            } else {
+                agentDot.className = 'status-dot pulse';
+                agentText.textContent = 'Agent Active (100% Auto)';
             }
         }
     } catch (e) {

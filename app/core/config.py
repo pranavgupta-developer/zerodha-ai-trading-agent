@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     # Execution autonomy (True: auto-execute; False: require human approval on dashboard)
     AUTONOMOUS_EXECUTION: bool = True
 
+    # Market Hours Enforcement (True: only trade 09:15-15:30 IST on NSE trading days)
+    CHECK_MARKET_HOURS: bool = True
+    MARKET_OPEN_HOUR: int = 9
+    MARKET_OPEN_MINUTE: int = 15  # Default NSE continuous open is 09:15 IST (configurable via .env to 09:30)
+    MARKET_CLOSE_HOUR: int = 15
+    MARKET_CLOSE_MINUTE: int = 30 # NSE continuous close is 15:30 IST
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings() # type: ignore

@@ -26,7 +26,9 @@ class TradingPipeline:
         anomaly_detector: Optional[Any] = None,
         model_registry: Optional[Any] = None,
         signal_scorer: Optional[SignalQualityScorer] = None,
-        min_quality_threshold: float = 50.0
+        min_quality_threshold: float = 50.0,
+        ml_engine: Optional[Any] = None,
+        quant_engine: Optional[Any] = None,
     ):
         self.strategy = strategy
         self.agent = agent
@@ -37,6 +39,8 @@ class TradingPipeline:
         self.model_registry = model_registry
         self.signal_scorer = signal_scorer or SignalQualityScorer(min_quality_threshold=min_quality_threshold)
         self.min_quality_threshold = min_quality_threshold
+        self.ml_engine = ml_engine
+        self.quant_engine = quant_engine
 
     def process_tick(
         self, 
@@ -47,7 +51,9 @@ class TradingPipeline:
         account_state: AccountState,
         quote_data: Optional[Dict[str, Any]] = None,
         mtf_candles: Optional[List[Any]] = None,
-        market_regime: Optional[str] = None
+        market_regime: Optional[str] = None,
+        timestamp: Optional[str] = None,
+        **kwargs: Any
     ) -> Tuple[Optional[CandidateTrade], Optional[ManagedOrder], str]:
         """
         Runs the full pipeline for a new tick/candle.
@@ -62,6 +68,21 @@ class TradingPipeline:
         )
         if signal.direction == SignalDirection.HOLD:
             return None, None, f"Strategy generated HOLD: {signal.reason}"
+
+        # 1a. Live Machine Learning Engine Inference (XGBoost / Random Forest)
+        if self.ml_engine and candles and len(candles) >= 15:
+            try:
+                features = self.ml_engine.extract_features(candles)
+                pred = self.ml_engine.predict(features, symbol=symbol)
+                signal.expected_return_pct = pred.expected_return_pct
+                signal.confidence = pred.confidence
+                if not indicators:
+                    indicators = {}
+                indicators["ml_prediction"] = pred.predicted_direction
+                indicators["ml_confidence"] = pred.confidence
+                indicators["expected_return_pct"] = pred.expected_return_pct
+            except Exception as e:
+                logger.debug(f"Live ML inference error in pipeline for {symbol}: {e}")
 
         # 1b. Signal Quality Scoring (0-100 Multi-Factor Score)
         score_res = self.signal_scorer.calculate_score(

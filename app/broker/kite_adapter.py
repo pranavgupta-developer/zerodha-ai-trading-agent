@@ -212,7 +212,7 @@ class BrokerAdapter:
             for p in raw_pos.get("net", []):
                 item = dict(p)
                 item["tradingsymbol"] = str(item.get("tradingsymbol", "")).replace(".NS", "").strip()
-                item["quantity"] = abs(int(item.get("quantity", 0)))
+                item["quantity"] = int(item.get("quantity", 0))
                 cleaned_net.append(item)
             return {"net": cleaned_net, "day": raw_pos.get("day", []), "realized_pnl": float(state.get("realized_pnl", 0.0))}
             
@@ -280,51 +280,85 @@ class BrokerAdapter:
             
         if settings.TRADING_MODE == "DRY_RUN":
             import uuid
-            mock_id = f"mock_{uuid.uuid4().hex[:12]}"
-            logger.info(f"[DRY_RUN] Placed mock {transaction_type} order for {quantity} {clean_symbol} @ {price}. ID: {mock_id}")
+            dry_id = f"dry_{uuid.uuid4().hex[:12]}"
+            
+            # Resolve actual market price for MARKET orders (price <= 0.0)
+            exec_price = price
+            if exec_price <= 0.0:
+                try:
+                    import app.main as m
+                    exec_price = m.price_cache.get_by_symbol(clean_symbol, 0.0)
+                except Exception:
+                    exec_price = 0.0
+            
+            logger.info(f"[DRY_RUN] Placed {transaction_type} order on live market feed for {quantity} {clean_symbol} @ ₹{exec_price:.2f}. ID: {dry_id}")
             
             # Persist order and position in DRY_RUN
             state = self._load_dry_run_state()
             state["orders"].append({
-                "order_id": mock_id,
+                "order_id": dry_id,
                 "status": "COMPLETE",
                 "tradingsymbol": clean_symbol,
                 "transaction_type": transaction_type,
                 "quantity": quantity,
-                "price": price,
+                "price": exec_price,
                 "filled_quantity": quantity
             })
             
-            # Update positions (ensuring non-negative quantities and deduplication)
+            # Update positions (two-way long/short accounting with accurate realized P&L)
             found = False
             for pos in state["positions"]["net"]:
                 if pos["tradingsymbol"] == clean_symbol:
                     found = True
-                    curr_qty = abs(int(pos.get("quantity", 0)))
-                    curr_avg = float(pos.get("average_price", price))
+                    curr_qty = int(pos.get("quantity", 0))
+                    curr_avg = float(pos.get("average_price", exec_price))
+                    effective_price = exec_price if exec_price > 0.0 else curr_avg
+                    
                     if transaction_type == "BUY":
-                        new_qty = curr_qty + quantity
-                        if new_qty > 0 and price > 0:
-                            pos["average_price"] = round((curr_qty * curr_avg + quantity * price) / new_qty, 2)
-                        pos["quantity"] = new_qty
-                    else:
-                        # SELL decreases holding down to 0, never negative
-                        sold_qty = min(curr_qty, quantity)
-                        if sold_qty > 0 and price > 0 and curr_avg > 0:
-                            pnl_gain = round((price - curr_avg) * sold_qty, 2)
+                        if curr_qty < 0:
+                            # Closing/covering short position
+                            covered_qty = min(abs(curr_qty), quantity)
+                            pnl_gain = round((curr_avg - effective_price) * covered_qty, 2)
                             state["realized_pnl"] = round(float(state.get("realized_pnl", 0.0)) + pnl_gain, 2)
-                        pos["quantity"] = max(0, curr_qty - quantity)
+                            new_qty = curr_qty + quantity
+                            pos["quantity"] = new_qty
+                            if new_qty > 0:
+                                pos["average_price"] = effective_price
+                        else:
+                            # Increasing long position
+                            new_qty = curr_qty + quantity
+                            if new_qty > 0 and effective_price > 0:
+                                pos["average_price"] = round((curr_qty * curr_avg + quantity * effective_price) / new_qty, 2)
+                            pos["quantity"] = new_qty
+                    else:  # SELL
+                        if curr_qty > 0:
+                            # Closing/selling long position
+                            sold_qty = min(curr_qty, quantity)
+                            pnl_gain = round((effective_price - curr_avg) * sold_qty, 2)
+                            state["realized_pnl"] = round(float(state.get("realized_pnl", 0.0)) + pnl_gain, 2)
+                            new_qty = curr_qty - quantity
+                            pos["quantity"] = new_qty
+                            if new_qty < 0:
+                                pos["average_price"] = effective_price
+                        else:
+                            # Opening/increasing short position
+                            curr_short = abs(curr_qty)
+                            new_short = curr_short + quantity
+                            if new_short > 0 and effective_price > 0:
+                                pos["average_price"] = round((curr_short * curr_avg + quantity * effective_price) / new_short, 2)
+                            pos["quantity"] = -new_short
                     break
+                    
             if not found:
-                initial_qty = quantity if transaction_type == "BUY" else 0
+                initial_qty = quantity if transaction_type == "BUY" else -quantity
                 state["positions"]["net"].append({
                     "tradingsymbol": clean_symbol,
                     "quantity": initial_qty,
-                    "average_price": price
+                    "average_price": exec_price
                 })
                 
             self._save_dry_run_state(state)
-            return mock_id
+            return dry_id
             
         self._ensure_authenticated()
         
@@ -352,7 +386,7 @@ class BrokerAdapter:
         """
         Fetches the state transition history of a specific order.
         """
-        if settings.TRADING_MODE == "DRY_RUN" and order_id.startswith("mock_"):
+        if settings.TRADING_MODE == "DRY_RUN" and (order_id.startswith("dry_") or order_id.startswith("mock_")):
             state = self._load_dry_run_state()
             for order in state.get("orders", []):
                 if isinstance(order, dict) and order.get("order_id") == order_id:

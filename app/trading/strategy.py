@@ -16,6 +16,11 @@ class StrategyConfig(BaseModel):
     filter_sideways_regime: bool = False  # If True, strictly suppresses in SIDEWAYS; if False, applies compressed targets
     enable_mtf_filter: bool = True
     mtf_ema_period: int = 20
+    # Minimum expected edge threshold after estimated round-trip statutory costs & slippage
+    min_edge_threshold_pct: float = 0.15
+    # Advanced Quant Alpha Modules
+    enable_pullback_continuation: bool = True
+    enable_mean_reversion: bool = True
 
 class EmaRsiVwapStrategy:
     """
@@ -26,10 +31,11 @@ class EmaRsiVwapStrategy:
     Generates SELL signals when fast EMA crosses below slow EMA, RSI is not oversold, and Price < VWAP.
     Adapts Stop-Loss and Take-Target dynamically to market regimes (Trending, Sideways, High Volatility).
     Validates lower timeframe signals against higher timeframe trend (MTF) to avoid counter-trend trades.
+    Includes Regime Pullback Continuation and Mean-Reversion modules.
     """
     def __init__(self, config: StrategyConfig = StrategyConfig()):
         self.config = config
-        self.version = "v1.2-MTF-Regime-EMA-RSI"
+        self.version = "v2.0-MultiRegime-QuantAlpha"
 
     def _classify_regime_internal(self, current_price: float, rsi: float, ema_slow: float, atr: float) -> str:
         """Lightweight fallback regime classifier from current indicators."""
@@ -86,9 +92,8 @@ class EmaRsiVwapStrategy:
         if not active_regime or active_regime == "UNKNOWN":
             active_regime = self._classify_regime_internal(current_price, float(curr_rsi), float(curr_slow), float(curr_atr)) # type: ignore
 
-        # Bullish Crossover (fast crosses above slow)
+        # 1. Primary Signal: Bullish / Bearish EMA Crossover
         bullish_cross = prev_fast <= prev_slow and curr_fast > curr_slow # type: ignore
-        # Bearish Crossover (fast crosses below slow)
         bearish_cross = prev_fast >= prev_slow and curr_fast < curr_slow # type: ignore
         direction = SignalDirection.HOLD
         reason = "No signal"
@@ -102,6 +107,45 @@ class EmaRsiVwapStrategy:
             direction = SignalDirection.SELL
             reason = f"Bearish EMA crossover (RSI: {curr_rsi:.1f}, Price < VWAP)" # type: ignore
             
+        # 2. Secondary Quant Alpha: Regime-Adaptive Pullback & Mean-Reversion Signals
+        if direction == SignalDirection.HOLD and curr_fast is not None and curr_slow is not None:
+            # Bullish Pullback in Trending Market
+            if (
+                self.config.enable_pullback_continuation 
+                and active_regime == "BULLISH_TREND"
+                and curr_fast > curr_slow
+                and current_price > curr_vwap
+                and abs(current_price - curr_fast) / max(1.0, current_price) <= 0.004
+                and 48.0 <= curr_rsi < self.config.rsi_overbought
+            ):
+                direction = SignalDirection.BUY
+                reason = f"Bullish Pullback Continuation ({self.config.fast_ema_period} EMA support, RSI: {curr_rsi:.1f}, Price > VWAP)"
+
+            # Bearish Pullback in Trending Market
+            elif (
+                self.config.enable_pullback_continuation 
+                and active_regime == "BEARISH_TREND"
+                and curr_fast < curr_slow
+                and current_price < curr_vwap
+                and abs(current_price - curr_fast) / max(1.0, current_price) <= 0.004
+                and self.config.rsi_oversold < curr_rsi <= 52.0
+            ):
+                direction = SignalDirection.SELL
+                reason = f"Bearish Pullback Continuation ({self.config.fast_ema_period} EMA resistance, RSI: {curr_rsi:.1f}, Price < VWAP)"
+
+            # Mean-Reversion at Extremes in Sideways Market
+            elif (
+                self.config.enable_mean_reversion
+                and active_regime == "SIDEWAYS"
+                and not self.config.filter_sideways_regime
+            ):
+                if current_price < curr_vwap and curr_rsi <= 32.0:
+                    direction = SignalDirection.BUY
+                    reason = f"Mean-Reversion Oversold Rebound (RSI: {curr_rsi:.1f}, reversion target: VWAP ₹{curr_vwap:.2f})"
+                elif current_price > curr_vwap and curr_rsi >= 68.0:
+                    direction = SignalDirection.SELL
+                    reason = f"Mean-Reversion Overbought Rebound (RSI: {curr_rsi:.1f}, reversion target: VWAP ₹{curr_vwap:.2f})"
+
         if direction == SignalDirection.HOLD:
             return Signal(
                 symbol=symbol, direction=direction, confidence=0.0, 
@@ -189,10 +233,41 @@ class EmaRsiVwapStrategy:
             target = current_price - (stop_distance * effective_rr)
             expected_ret = round(((current_price - target) / current_price) * 100.0, 3)
             
+        if self.config.min_edge_threshold_pct > 0.0 and expected_ret < self.config.min_edge_threshold_pct:
+            return Signal(
+                symbol=symbol,
+                direction=SignalDirection.HOLD,
+                confidence=0.0,
+                entry_price=current_price,
+                stop_loss=0.0,
+                take_target=0.0,
+                reason=f"Signal suppressed: Expected return {expected_ret:.2f}% below min edge threshold ({self.config.min_edge_threshold_pct}%) to clear statutory friction",
+                strategy_version=self.version,
+                market_regime=active_regime,
+                expected_return_pct=expected_ret,
+                mtf_confirmed=mtf_confirmed
+            )
+
+        # Continuous conviction score based on indicator strength (0.50 to 0.95)
+        rsi_val = float(curr_rsi)
+        if direction == SignalDirection.BUY:
+            rsi_conviction = max(0.0, 1.0 - abs(rsi_val - 55.0) / 25.0)
+        else:
+            rsi_conviction = max(0.0, 1.0 - abs(rsi_val - 45.0) / 25.0)
+
+        atr_val = max(1e-4, float(curr_atr))
+        ema_spread_conviction = min(1.0, abs(float(curr_fast) - float(curr_slow)) / atr_val)
+        vwap_dist_conviction = min(1.0, abs(float(current_price) - float(curr_vwap)) / atr_val)
+
+        calc_conf = 0.60 + (0.15 * ema_spread_conviction) + (0.10 * rsi_conviction) + (0.05 * vwap_dist_conviction)
+        if mtf_confirmed:
+            calc_conf += 0.05
+        dynamic_confidence = round(min(0.95, max(0.50, calc_conf)), 2)
+
         return Signal(
             symbol=symbol,
             direction=direction,
-            confidence=0.85 if mtf_confirmed else 0.8,
+            confidence=dynamic_confidence,
             entry_price=current_price,
             stop_loss=round(stop_loss, 2),
             take_target=round(target, 2),
