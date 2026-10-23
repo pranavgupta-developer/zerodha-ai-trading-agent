@@ -10,7 +10,7 @@
       "created_at": "2026-10-17T05:50:05.891212+00:00",
       "is_active": true,
       "total_predictions": 0,
-      "completed_predictions": 57,
+      "completed_predictions": 59,
       "correct_predictions": 24,
       "recent_outcomes": [
         true,
@@ -26,6 +26,8 @@
         false,
         true,
         true,
+        false,
+        false,
         false,
         false,
         false,
@@ -107,14 +109,16 @@
         0.81,
         0.81,
         0.81,
+        0.81,
+        0.81,
         0.81
       ],
       "rolling_accuracy": 0.0,
-      "brier_score": 0.4519,
+      "brier_score": 0.464,
       "simulated_pnl": 18491.45,
-      "consecutive_losses": 23,
+      "consecutive_losses": 25,
       "promoted_at": "2026-10-17T06:15:25.617093+00:00",
-      "rolled_back_at": "2026-10-23T22:03:50.374335+00:00"
+      "rolled_back_at": "2026-10-23T22:27:46.198674+00:00"
     },
     {
       "model_id": "challenger_xgb_v1_1",
@@ -136,8 +140,8 @@
       "brier_score": 0.0,
       "simulated_pnl": -233.0,
       "consecutive_losses": 1,
-      "promoted_at": "2026-10-23T22:03:50.897593+00:00",
-      "rolled_back_at": "2026-10-23T22:03:50.920381+00:00"
+      "promoted_at": "2026-10-23T22:27:46.671415+00:00",
+      "rolled_back_at": "2026-10-23T22:27:46.695054+00:00"
     },
     {
       "model_id": "fallback_rules_v0_9",
@@ -203,7 +207,7 @@
       "role": "CHALLENGER",
       "status": "SHADOW",
       "description": "Deep sequence model for intraday micro-reversals",
-      "created_at": "2026-10-23T22:03:50.943279+00:00",
+      "created_at": "2026-10-23T22:27:46.721397+00:00",
       "is_active": true,
       "total_predictions": 0,
       "completed_predictions": 0,
@@ -219,38 +223,6 @@
     }
   ],
   "shadow_predictions": [
-    {
-      "shadow_id": "shadow_test_lstm_v2_TRENT_1792788374_2969",
-      "model_id": "test_lstm_v2",
-      "symbol": "TRENT",
-      "predicted_direction": "BUY",
-      "confidence": 0.7129,
-      "entry_price": 2727.5,
-      "reasoning": "Challenger Bullish: RSI 66.3 > 54 and Price above EMA 20 (ATR: \u20b94.86)",
-      "timestamp": "2026-10-23T20:46:14.853879+00:00",
-      "status": "PENDING",
-      "trade_id": null,
-      "exit_price": null,
-      "realized_pnl": null,
-      "is_correct": null,
-      "exit_timestamp": null
-    },
-    {
-      "shadow_id": "shadow_test_lstm_v2_APOLLOHOSP_1792788374_2970",
-      "model_id": "test_lstm_v2",
-      "symbol": "APOLLOHOSP",
-      "predicted_direction": "BUY",
-      "confidence": 0.7262,
-      "entry_price": 7730.0,
-      "reasoning": "Challenger Bullish: RSI 67.6 > 54 and Price above EMA 20 (ATR: \u20b910.51)",
-      "timestamp": "2026-10-23T20:46:14.897983+00:00",
-      "status": "PENDING",
-      "trade_id": null,
-      "exit_price": null,
-      "realized_pnl": null,
-      "is_correct": null,
-      "exit_timestamp": null
-    },
     {
       "shadow_id": "shadow_test_lstm_v2_ETERNAL_1792788374_2971",
       "model_id": "test_lstm_v2",
@@ -3418,6 +3390,38 @@
       "realized_pnl": 0.0,
       "is_correct": true,
       "exit_timestamp": "2026-10-23T22:03:50.374322+00:00"
+    },
+    {
+      "shadow_id": "shadow_test_lstm_v2_TATASTEEL_1792794191_200",
+      "model_id": "test_lstm_v2",
+      "symbol": "TATASTEEL",
+      "predicted_direction": "HOLD",
+      "confidence": 0.5,
+      "entry_price": 174.0,
+      "reasoning": "Neutral market momentum.",
+      "timestamp": "2026-10-23T22:23:11.018862+00:00",
+      "status": "COMPLETED",
+      "trade_id": "test_trade_approve_1",
+      "exit_price": 174.0,
+      "realized_pnl": 0.0,
+      "is_correct": true,
+      "exit_timestamp": "2026-10-23T22:23:11.084786+00:00"
+    },
+    {
+      "shadow_id": "shadow_test_lstm_v2_TATASTEEL_1792794466_200",
+      "model_id": "test_lstm_v2",
+      "symbol": "TATASTEEL",
+      "predicted_direction": "HOLD",
+      "confidence": 0.5,
+      "entry_price": 174.0,
+      "reasoning": "Neutral market momentum.",
+      "timestamp": "2026-10-23T22:27:46.130117+00:00",
+      "status": "COMPLETED",
+      "trade_id": "test_trade_approve_1",
+      "exit_price": 174.0,
+      "realized_pnl": 0.0,
+      "is_correct": true,
+      "exit_timestamp": "2026-10-23T22:27:46.198659+00:00"
     }
   ]
 }

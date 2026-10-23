@@ -561,17 +561,161 @@ function updateEmergencyStopUI(isActive) {
     }
 }
 
+window.currentPaperReportMarkdown = "";
+
+function switchPaperReportTab(tab) {
+    const visualDiv = document.getElementById('paper-visual-view');
+    const rawDiv = document.getElementById('paper-raw-view');
+    const btnVisual = document.getElementById('btn-tab-paper-visual');
+    const btnRaw = document.getElementById('btn-tab-paper-raw');
+
+    if (tab === 'visual') {
+        if (visualDiv) visualDiv.style.display = 'block';
+        if (rawDiv) rawDiv.style.display = 'none';
+        if (btnVisual) {
+            btnVisual.style.background = 'rgba(59, 130, 246, 0.2)';
+            btnVisual.style.color = '#60a5fa';
+            btnVisual.style.borderColor = 'rgba(59, 130, 246, 0.4)';
+        }
+        if (btnRaw) {
+            btnRaw.style.background = 'transparent';
+            btnRaw.style.color = 'var(--text-secondary)';
+            btnRaw.style.borderColor = 'transparent';
+        }
+    } else {
+        if (visualDiv) visualDiv.style.display = 'none';
+        if (rawDiv) rawDiv.style.display = 'block';
+        if (btnRaw) {
+            btnRaw.style.background = 'rgba(59, 130, 246, 0.2)';
+            btnRaw.style.color = '#60a5fa';
+            btnRaw.style.borderColor = 'rgba(59, 130, 246, 0.4)';
+        }
+        if (btnVisual) {
+            btnVisual.style.background = 'transparent';
+            btnVisual.style.color = 'var(--text-secondary)';
+            btnVisual.style.borderColor = 'transparent';
+        }
+    }
+}
+
+function handlePaperReportOverlayClick(event) {
+    if (event.target && event.target.id === 'paper-report-modal') {
+        closePaperReportModal();
+    }
+}
+
 async function showPaperReportModal() {
     const modal = document.getElementById('paper-report-modal');
-    const content = document.getElementById('paper-report-content');
     if (modal) modal.style.display = 'flex';
-    if (content) content.textContent = 'Generating validation report...';
-    
+
+    // Switch to visual view by default
+    switchPaperReportTab('visual');
+
+    const content = document.getElementById('paper-report-content');
+    if (content) content.textContent = 'Generating latest institutional validation report...';
+
     try {
-        const res = await fetch('/api/v1/system/paper-report/markdown');
-        const data = await res.json();
-        if (content) content.textContent = data.markdown || 'No report available.';
+        const [repRes, mdRes] = await Promise.all([
+            fetch('/api/v1/system/paper-report'),
+            fetch('/api/v1/system/paper-report/markdown')
+        ]);
+
+        const repData = await repRes.json();
+        const mdData = await mdRes.json();
+
+        window.currentPaperReportMarkdown = mdData.markdown || 'No report available.';
+        if (content) content.textContent = window.currentPaperReportMarkdown;
+
+        if (repData && repData.metrics) {
+            const m = repData.metrics;
+            const formatINR = (val) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(val || 0);
+
+            // Update KPI cards
+            const initEl = document.getElementById('paper-kpi-initial');
+            if (initEl) initEl.textContent = formatINR(m.initial_capital);
+
+            const currEl = document.getElementById('paper-kpi-current');
+            if (currEl) currEl.textContent = formatINR(m.current_capital);
+
+            const netPnlEl = document.getElementById('paper-kpi-net-pnl');
+            if (netPnlEl) {
+                const net = m.net_pnl_after_fees || 0;
+                const retPct = m.total_return_pct || 0;
+                netPnlEl.textContent = `${net >= 0 ? '+' : ''}${formatINR(net)} (${retPct >= 0 ? '+' : ''}${retPct.toFixed(2)}%)`;
+                netPnlEl.style.color = net >= 0 ? '#10b981' : '#ef4444';
+            }
+
+            const winRateEl = document.getElementById('paper-kpi-winrate');
+            if (winRateEl) {
+                const wr = m.win_rate_overall || 0;
+                const tot = m.total_trades || 0;
+                const wins = m.total_wins || 0;
+                const losses = m.total_losses || 0;
+                winRateEl.textContent = `${wr.toFixed(1)}% (${tot} trades: ${wins}W / ${losses}L)`;
+            }
+
+            const ddEl = document.getElementById('paper-kpi-drawdown');
+            if (ddEl) ddEl.textContent = `${(m.max_drawdown_pct || 0).toFixed(2)}%`;
+
+            const sharpeEl = document.getElementById('paper-kpi-sharpe');
+            if (sharpeEl) sharpeEl.textContent = `${(m.sharpe_ratio || 0).toFixed(2)} / ${(m.sortino_ratio || 0).toFixed(2)}`;
+
+            const feesEl = document.getElementById('paper-kpi-fees');
+            if (feesEl) feesEl.textContent = formatINR(m.total_brokerage_paid);
+
+            const daysEl = document.getElementById('paper-kpi-days');
+            if (daysEl) daysEl.textContent = `${m.active_trading_days || 1} of 7 Days (${m.session_start || 'N/A'})`;
+
+            const verdictBadge = document.getElementById('paper-verdict-badge');
+            if (verdictBadge) {
+                verdictBadge.textContent = m.validation_verdict || 'IN_PROGRESS';
+                if (m.validation_verdict === 'VALIDATED') {
+                    verdictBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+                    verdictBadge.style.color = '#34d399';
+                    verdictBadge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+                } else {
+                    verdictBadge.style.background = 'rgba(234, 179, 8, 0.2)';
+                    verdictBadge.style.color = '#facc15';
+                    verdictBadge.style.borderColor = 'rgba(234, 179, 8, 0.4)';
+                }
+            }
+
+            const periodEl = document.getElementById('paper-report-period');
+            if (periodEl) periodEl.textContent = `Period: ${m.session_start} to ${m.session_end} (${m.active_trading_days || 1} session)`;
+
+            // Populate Sessions Table
+            const tbody = document.querySelector('#paper-sessions-table tbody');
+            if (tbody && Array.isArray(repData.snapshots) && repData.snapshots.length > 0) {
+                tbody.innerHTML = repData.snapshots.map(s => {
+                    const netPnl = s.net_after_fees !== undefined ? s.net_after_fees : (s.net_pnl - (s.brokerage_fees || 0));
+                    const isProfit = netPnl >= 0;
+                    return `
+                        <tr>
+                            <td style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${s.date_str}</td>
+                            <td style="font-family: 'JetBrains Mono', monospace;">${formatINR(s.starting_margin)}</td>
+                            <td style="font-family: 'JetBrains Mono', monospace;">${formatINR(s.ending_margin)}</td>
+                            <td style="font-family: 'JetBrains Mono', monospace; color: ${s.realized_pnl >= 0 ? '#10b981' : '#ef4444'};">
+                                ${s.realized_pnl >= 0 ? '+' : ''}${formatINR(s.realized_pnl)}
+                            </td>
+                            <td>${s.total_trades} (${s.win_trades}W / ${s.loss_trades}L)</td>
+                            <td>
+                                <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-size: 0.72rem;">
+                                    ${(s.win_rate || 0).toFixed(1)}%
+                                </span>
+                            </td>
+                            <td style="color: #f59e0b; font-family: 'JetBrains Mono', monospace;">${formatINR(s.brokerage_fees)}</td>
+                            <td style="font-family: 'JetBrains Mono', monospace; font-weight: 700; color: ${isProfit ? '#10b981' : '#ef4444'};">
+                                ${isProfit ? '+' : ''}${formatINR(netPnl)}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } else if (tbody) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 1rem;">No completed session snapshots logged yet.</td></tr>`;
+            }
+        }
     } catch (e) {
+        console.error("Failed to load paper report:", e);
         if (content) content.textContent = 'Failed to load report: ' + e;
     }
 }

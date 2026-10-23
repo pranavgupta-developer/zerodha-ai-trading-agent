@@ -15,6 +15,7 @@ import { AutonomousStream } from './components/AutonomousStream';
 import { WatchlistML } from './components/WatchlistML';
 import { PositionsTable } from './components/PositionsTable';
 import { AuditLogStream } from './components/AuditLogStream';
+import { PaperReportModal } from './components/PaperReportModal';
 
 const API_BASE = "http://localhost:8000/api/v1";
 const WS_URL = "ws://localhost:8000/ws/candidate-trades";
@@ -39,6 +40,7 @@ export default function App() {
   const [marketStatus, setMarketStatus] = useState('CLOSED');
   const [marketHours, setMarketHours] = useState('09:30 - 15:30 IST');
   const [showTokenModal, setShowTokenModal] = useState(false);
+  const [showPaperReportModal, setShowPaperReportModal] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
   const [submittingToken, setSubmittingToken] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -287,6 +289,13 @@ export default function App() {
         onSubmit={handleConnectToken}
       />
 
+      {/* 3-7 Day Paper Forward Validation Report Modal */}
+      <PaperReportModal
+        show={showPaperReportModal}
+        onClose={() => setShowPaperReportModal(false)}
+        onShowToast={showToast}
+      />
+
       {/* Sidebar */}
       <Sidebar
         systemState={systemState}
@@ -298,11 +307,12 @@ export default function App() {
         marketHours={marketHours}
         onOpenTokenModal={() => setShowTokenModal(true)}
         onEmergencyStop={handleEmergencyStop}
+        onOpenPaperReport={() => setShowPaperReportModal(true)}
       />
 
       {/* Main Content */}
       <main className="main-content">
-        <HeaderBar pnl={pnl} margin={margin} />
+        <HeaderBar pnl={pnl} margin={margin} onOpenPaperReport={() => setShowPaperReportModal(true)} />
 
         <div className="dashboard-grid">
           {/* Key Metrics */}

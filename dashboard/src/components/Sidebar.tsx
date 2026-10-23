@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Power } from 'lucide-react';
+import { Activity, Power, FileText } from 'lucide-react';
 
 interface SidebarProps {
   systemState: string;
@@ -11,6 +11,7 @@ interface SidebarProps {
   marketHours?: string;
   onOpenTokenModal: () => void;
   onEmergencyStop: () => void;
+  onOpenPaperReport?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -22,6 +23,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   marketHours = '09:30 - 15:30 IST',
   onOpenTokenModal,
   onEmergencyStop,
+  onOpenPaperReport,
 }) => {
   const engineBadge = systemState === 'HALTED' 
     ? 'HALTED' 
@@ -194,7 +196,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      <div style={{ marginTop: 'auto' }}>
+      <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {onOpenPaperReport && (
+          <button
+            className="btn btn-secondary"
+            style={{
+              width: '100%',
+              padding: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(5, 150, 105, 0.2))',
+              color: '#34d399',
+              border: '1px solid rgba(16, 185, 129, 0.35)',
+              fontWeight: 600,
+              fontSize: '13px',
+              borderRadius: '8px',
+              cursor: 'pointer',
+            }}
+            onClick={onOpenPaperReport}
+          >
+            <FileText size={16} />
+            Paper Report
+          </button>
+        )}
         <button
           className="btn btn-danger"
           style={{ width: '100%', padding: '16px' }}

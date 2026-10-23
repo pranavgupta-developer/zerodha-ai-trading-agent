@@ -1,11 +1,13 @@
 import React from 'react';
+import { FileText } from 'lucide-react';
 
 interface HeaderBarProps {
   pnl: number;
   margin: number;
+  onOpenPaperReport?: () => void;
 }
 
-export const HeaderBar: React.FC<HeaderBarProps> = ({ pnl, margin }) => {
+export const HeaderBar: React.FC<HeaderBarProps> = ({ pnl, margin, onOpenPaperReport }) => {
   return (
     <header className="header-bar animate-enter">
       <div>
@@ -26,7 +28,30 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({ pnl, margin }) => {
           Multi-regime algorithmic signals, dynamic Kelly sizing, and institutional risk-validated broker execution
         </p>
       </div>
-      <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+        {onOpenPaperReport && (
+          <button
+            onClick={onOpenPaperReport}
+            className="btn btn-secondary"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '9px 16px',
+              borderRadius: '8px',
+              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(5, 150, 105, 0.25))',
+              color: '#34d399',
+              border: '1px solid rgba(16, 185, 129, 0.35)',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '13px',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            }}
+            title="View 3-7 Day Paper-Trading Forward Validation Report"
+          >
+            <FileText size={16} /> Paper Report
+          </button>
+        )}
         <div
           style={{
             textAlign: 'right',
